@@ -1,0 +1,30 @@
+[project]
+name = "agent-discover-scanner"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+authors = [
+    { name = "Mohamed Waseem", email = "mwaseem@defendai.tech" }
+]
+requires-python = ">=3.9"
+dependencies = [
+    "esprima>=4.0.1",
+    "pydantic>=2.12.5",
+    "rich>=14.2.0",
+    "sarif-om>=1.0.4",
+    "typer[all]>=0.20.0",
+]
+
+[project.scripts]
+agent-discover-scanner = "agent_discover_scanner:main"
+
+[build-system]
+requires = ["uv_build>=0.9.18,<0.10.0"]
+build-backend = "uv_build"
+
+[dependency-groups]
+dev = [
+    "pytest>=8.4.2",
+    "pytest-cov>=7.0.0",
+    "ruff>=0.14.9",
+]

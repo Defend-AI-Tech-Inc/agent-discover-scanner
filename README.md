@@ -109,7 +109,7 @@ MIT License - See [LICENSE](LICENSE)
 
 ## 🙏 Acknowledgments
 
-Built as part of the 90-day DefendAI Trinity execution plan.
+Thanks to the DefendAI Team!
 
 ---
 

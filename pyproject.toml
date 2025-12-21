@@ -70,3 +70,8 @@ ignore = ["E501"]
 
 [tool.coverage.run]
 source = ["src"]
+
+[dependency-groups]
+dev = [
+    "twine>=6.2.0",
+]

@@ -1,0 +1,47 @@
+# Changelog
+
+All notable changes to this project will be documented in this file.
+
+The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
+and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+
+## [Unreleased]
+
+## [1.0.0-rc1] - 2025-12-20
+
+### Added
+- User-friendly error messages with troubleshooting tips
+- File validation for all CLI commands (scan, deps, correlate)
+- Graceful handling of missing files and empty directories
+- PyPI packaging with Python 3.10+ support
+- 21 comprehensive tests for Week 2 features (correlation engine, behavioral patterns)
+- GitHub Actions CI/CD pipeline
+
+### Changed
+- Lowered Python requirement from 3.12 to 3.10 for broader compatibility
+- Improved error messages to guide users toward solutions
+
+### Fixed
+- Edge case handling for empty directories
+- Proper exception handling to avoid confusing error messages
+
+## [1.0.0] - 2025-12-19
+
+### Added
+- Static code analysis for Python and JavaScript/TypeScript
+- Detection rules for AutoGen (DAI001), CrewAI (DAI002), LangChain/LangGraph (DAI003)
+- Shadow AI detection (DAI004) for unmanaged LLM clients
+- Dependency scanning for requirements.txt and package.json
+- Network monitoring for active agent connections
+- Correlation engine to match code findings with runtime behavior
+- Behavioral pattern detection (ReAct loops, RAG patterns, multi-turn conversations)
+- Agent classification: CONFIRMED, UNKNOWN, ZOMBIE, GHOST
+- SARIF output format for CI/CD integration
+- CLI commands: scan, deps, monitor, correlate
+- Comprehensive test suite (12 tests)
+- MIT License
+- Documentation: README, CONTRIBUTING, LICENSE
+
+[Unreleased]: https://github.com/Defend-AI-Tech-Inc/agent-discover-scanner/compare/v1.0.0-rc1...HEAD
+[1.0.0-rc1]: https://github.com/Defend-AI-Tech-Inc/agent-discover-scanner/compare/v1.0.0...v1.0.0-rc1
+[1.0.0]: https://github.com/Defend-AI-Tech-Inc/agent-discover-scanner/releases/tag/v1.0.0

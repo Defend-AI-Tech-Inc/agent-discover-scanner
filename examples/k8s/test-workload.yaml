@@ -1,0 +1,224 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: defendai-test
+  labels:
+    app: defendai
+    purpose: testing
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: test-agent-script
+  namespace: defendai-test
+data:
+  test_openai.py: |
+    #!/usr/bin/env python3
+    """
+    Test script to validate Tetragon is detecting LLM API calls.
+    This makes a connection to OpenAI's API (without authentication).
+    """
+    import socket
+    import time
+    import sys
+    
+    def test_connection(host, port=443):
+        """Attempt to connect to LLM API endpoint."""
+        print(f"[TEST] Attempting connection to {host}:{port}...")
+        try:
+            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            sock.settimeout(5)
+            sock.connect((host, port))
+            print(f"[TEST] ✅ Successfully connected to {host}")
+            sock.close()
+            return True
+        except Exception as e:
+            print(f"[TEST] ❌ Connection failed: {e}")
+            return False
+    
+    def main():
+        """Test connections to various LLM providers."""
+        endpoints = [
+            ("api.openai.com", 443),
+            ("api.anthropic.com", 443),
+            ("generativelanguage.googleapis.com", 443),
+            ("api.cohere.ai", 443),
+        ]
+        
+        print("=" * 60)
+        print("DefendAI Tetragon Test - LLM API Detection")
+        print("=" * 60)
+        print()
+        
+        for host, port in endpoints:
+            test_connection(host, port)
+            time.sleep(2)  # Brief pause between tests
+        
+        print()
+        print("=" * 60)
+        print("[TEST] Test complete!")
+        print()
+        print("Check Tetragon logs with:")
+        print("kubectl logs -n kube-system -l app.kubernetes.io/name=tetragon \\")
+        print("  -c export-stdout --tail=100 | grep -E 'openai|anthropic'")
+        print("=" * 60)
+        
+        # Keep pod running for inspection
+        print()
+        print("[TEST] Sleeping for 5 minutes (pod will remain running)...")
+        time.sleep(300)
+
+    if __name__ == "__main__":
+        main()
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: test-llm-detection
+  namespace: defendai-test
+  labels:
+    app: defendai
+    component: test
+spec:
+  template:
+    metadata:
+      labels:
+        app: defendai-test
+        component: llm-test
+    spec:
+      restartPolicy: Never
+      containers:
+      - name: test-agent
+        image: python:3.11-slim
+        command: ["/bin/bash", "-c"]
+        args:
+        - |
+          # Copy script and make executable
+          cp /scripts/test_openai.py /tmp/test_openai.py
+          chmod +x /tmp/test_openai.py
+          
+          # Run test
+          python3 /tmp/test_openai.py
+        volumeMounts:
+        - name: scripts
+          mountPath: /scripts
+        resources:
+          requests:
+            memory: "64Mi"
+            cpu: "100m"
+          limits:
+            memory: "128Mi"
+            cpu: "200m"
+      volumes:
+      - name: scripts
+        configMap:
+          name: test-agent-script
+  backoffLimit: 1
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: interactive-test-agent
+  namespace: defendai-test
+  labels:
+    app: defendai-test
+    component: interactive
+spec:
+  containers:
+  - name: python-agent
+    image: python:3.11-slim
+    command: ["/bin/bash", "-c", "sleep infinity"]
+    resources:
+      requests:
+        memory: "64Mi"
+        cpu: "100m"
+      limits:
+        memory: "128Mi"
+        cpu: "200m"
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: test-instructions
+  namespace: defendai-test
+data:
+  README.md: |
+    # Tetragon Test Workloads
+    
+    This namespace contains test workloads to validate Tetragon is properly detecting LLM API calls.
+    
+    ## Test 1: Automated Job
+    
+    The Job `test-llm-detection` automatically tests connections to multiple LLM providers.
+    
+    **Check job status:**
+    ```bash
+    kubectl get jobs -n defendai-test
+    kubectl logs -n defendai-test job/test-llm-detection
+    ```
+    
+    **Verify Tetragon detected it:**
+    ```bash
+    kubectl logs -n kube-system -l app.kubernetes.io/name=tetragon \
+      -c export-stdout --tail=100 | grep -E 'openai|anthropic'
+    ```
+    
+    You should see JSON events showing connections from the test pod.
+    
+    ## Test 2: Interactive Pod
+    
+    The Pod `interactive-test-agent` stays running for manual testing.
+    
+    **Exec into the pod:**
+    ```bash
+    kubectl exec -it -n defendai-test interactive-test-agent -- /bin/bash
+    ```
+    
+    **Run manual tests:**
+    ```bash
+    # Test OpenAI connection
+    python3 -c "import socket; s=socket.socket(); s.connect(('api.openai.com', 443)); print('Connected!')"
+    
+    # Test Anthropic connection
+    python3 -c "import socket; s=socket.socket(); s.connect(('api.anthropic.com', 443)); print('Connected!')"
+    ```
+    
+    **Watch Tetragon in real-time:**
+    ```bash
+    # In another terminal
+    kubectl logs -n kube-system -l app.kubernetes.io/name=tetragon \
+      -c export-stdout -f | grep defendai-test
+    ```
+    
+    ## Cleanup
+    
+    ```bash
+    kubectl delete namespace defendai-test
+    ```
+    
+    ## Expected Tetragon Output
+    
+    When connections are made, you should see events like:
+    
+    ```json
+    {
+      "process_connect": {
+        "process": {
+          "pod": {
+            "namespace": "defendai-test",
+            "name": "test-llm-detection-xxxxx",
+            "container": "test-agent"
+          },
+          "binary": "/usr/local/bin/python3"
+        },
+        "destination": {
+          "address": "104.18.7.192",
+          "port": 443
+        },
+        "dns_name": "api.openai.com"
+      },
+      "time": "2025-12-22T10:30:00Z"
+    }
+    ```
+    
+    If you see these events, **Tetragon is working correctly!** ✅

@@ -1,0 +1,150 @@
+apiVersion: cilium.io/v1alpha1
+kind: TracingPolicy
+metadata:
+  name: llm-api-detection
+  namespace: kube-system
+  labels:
+    app: defendai
+    component: agent-discover-scanner
+spec:
+  # Monitor TCP connections to LLM and Vector DB endpoints
+  kprobes:
+  - call: "tcp_connect"
+    syscall: false
+    args:
+    - index: 0
+      type: "sock"
+    selectors:
+    # OpenAI API
+    - matchArgs:
+      - index: 0
+        operator: "DAddr"
+        values:
+        - "api.openai.com"
+      matchActions:
+      - action: Post
+    # Anthropic API
+    - matchArgs:
+      - index: 0
+        operator: "DAddr"
+        values:
+        - "api.anthropic.com"
+      matchActions:
+      - action: Post
+    # Google AI (Gemini)
+    - matchArgs:
+      - index: 0
+        operator: "DAddr"
+        values:
+        - "generativelanguage.googleapis.com"
+        - "aiplatform.googleapis.com"
+      matchActions:
+      - action: Post
+    # Cohere API
+    - matchArgs:
+      - index: 0
+        operator: "DAddr"
+        values:
+        - "api.cohere.ai"
+        - "api.cohere.com"
+      matchActions:
+      - action: Post
+    # AWS Bedrock (multiple regions)
+    - matchArgs:
+      - index: 0
+        operator: "DAddr"
+        values:
+        - "bedrock-runtime.us-east-1.amazonaws.com"
+        - "bedrock-runtime.us-west-2.amazonaws.com"
+        - "bedrock-runtime.eu-west-1.amazonaws.com"
+        - "bedrock-runtime.ap-southeast-1.amazonaws.com"
+        # Add more regions as needed
+      matchActions:
+      - action: Post
+    # Azure OpenAI
+    - matchArgs:
+      - index: 0
+        operator: "DAddr"
+        values:
+        - "*.openai.azure.com"
+      matchActions:
+      - action: Post
+    # Hugging Face Inference API
+    - matchArgs:
+      - index: 0
+        operator: "DAddr"
+        values:
+        - "api-inference.huggingface.co"
+      matchActions:
+      - action: Post
+    # Pinecone Vector DB
+    - matchArgs:
+      - index: 0
+        operator: "DAddr"
+        values:
+        - "*.pinecone.io"
+        - "api.pinecone.io"
+      matchActions:
+      - action: Post
+    # Weaviate Vector DB
+    - matchArgs:
+      - index: 0
+        operator: "DAddr"
+        values:
+        - "*.weaviate.io"
+        - "weaviate.io"
+      matchActions:
+      - action: Post
+    # Qdrant Vector DB
+    - matchArgs:
+      - index: 0
+        operator: "DAddr"
+        values:
+        - "*.qdrant.io"
+        - "cloud.qdrant.io"
+      matchActions:
+      - action: Post
+    # Milvus Vector DB (Zilliz Cloud)
+    - matchArgs:
+      - index: 0
+        operator: "DAddr"
+        values:
+        - "*.zillizcloud.com"
+      matchActions:
+      - action: Post
+---
+apiVersion: cilium.io/v1alpha1
+kind: TracingPolicy
+metadata:
+  name: llm-process-monitoring
+  namespace: kube-system
+  labels:
+    app: defendai
+    component: agent-discover-scanner
+spec:
+  # Monitor process executions related to AI/ML workloads
+  tracepoints:
+  - subsystem: "raw_syscalls"
+    event: "sys_enter"
+    args:
+    - index: 4
+      type: "syscall64"
+    selectors:
+    # Monitor Python processes (common for AI agents)
+    - matchBinaries:
+      - operator: "In"
+        values:
+        - "/usr/bin/python"
+        - "/usr/bin/python3"
+        - "/usr/local/bin/python"
+        - "/usr/local/bin/python3"
+      matchActions:
+      - action: Post
+    # Monitor Node.js processes (JavaScript AI agents)
+    - matchBinaries:
+      - operator: "In"
+        values:
+        - "/usr/bin/node"
+        - "/usr/local/bin/node"
+      matchActions:
+      - action: Post

@@ -458,6 +458,18 @@ def monitor_k8s(
         "-d",
         help="Monitoring duration in seconds (default: run until Ctrl+C)",
     ),
+    output_file: Optional[str] = typer.Option(
+        None,
+        "--output",
+        "-o",
+        help="Output file path (for json/jsonl formats)",
+    ),
+    output_format: str = typer.Option(
+        "console",
+        "--format",
+        "-f",
+        help="Output format: console, json, or jsonl",
+    ),
 ):
     """
     Monitor Kubernetes cluster for AI agent activity using Tetragon.
@@ -468,23 +480,37 @@ def monitor_k8s(
     - TracingPolicy deployed (see docs/TETRAGON_SETUP.md)
     
     Examples:
-        # Monitor indefinitely
+        # Monitor with console output
         agent-discover-scanner monitor-k8s
         
-        # Monitor for 60 seconds
-        agent-discover-scanner monitor-k8s --duration 60
+        # Save detections to JSONL file
+        agent-discover-scanner monitor-k8s --output detections.jsonl --format jsonl
+        
+        # Monitor for 60 seconds and save as JSON
+        agent-discover-scanner monitor-k8s --duration 60 --output report.json --format json
         
         # Monitor Tetragon in custom namespace
         agent-discover-scanner monitor-k8s --namespace monitoring
     """
+    from pathlib import Path
     from .monitors import monitor_k8s as run_monitor
     
+    output_path = Path(output_file) if output_file else None
+    
     try:
-        run_monitor(namespace=namespace, duration=duration)
+        run_monitor(
+            namespace=namespace,
+            duration=duration,
+            output_file=output_path,
+            output_format=output_format,
+        )
     except FileNotFoundError:
         console.print(
             "[red]Error: kubectl not found. Please install kubectl and configure cluster access.[/red]"
         )
+        raise typer.Exit(1)
+    except Exception as e:
+        console.print(f"[red]Error: {e}[/red]")
         raise typer.Exit(1)
     except Exception as e:
         console.print(f"[red]Error: {e}[/red]")

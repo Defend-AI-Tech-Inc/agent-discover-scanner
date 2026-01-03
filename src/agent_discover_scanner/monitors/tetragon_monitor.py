@@ -4,6 +4,7 @@ import json
 import subprocess
 from collections import defaultdict
 from datetime import datetime
+from pathlib import Path
 from typing import Iterator, Optional
 
 from rich.console import Console
@@ -11,6 +12,7 @@ from rich.table import Table
 
 from .tetragon_events import parse_tetragon_event, TetragonEvent
 from .vendor_mapping import identify_vendor
+from .json_output import JSONLogger
 
 
 console = Console()
@@ -39,10 +41,24 @@ class TetragonMonitor:
         Yields:
             Parsed TetragonEvent objects
         """
+        # Get first Tetragon pod (kubectl logs with label selector fails with multiple pods)
+        get_pod_cmd = [
+            "kubectl", "get", "pods",
+            "-n", self.namespace,
+            "-l", "app.kubernetes.io/name=tetragon",
+            "-o", "jsonpath={.items[0].metadata.name}",
+        ]
+        
+        try:
+            pod_name = subprocess.check_output(get_pod_cmd, text=True).strip()
+        except subprocess.CalledProcessError:
+            console.print("[red]Error: Could not find Tetragon pods. Is Tetragon installed?[/red]")
+            raise
+        
         cmd = [
             "kubectl", "logs",
             "-n", self.namespace,
-            "-l", "app.kubernetes.io/name=tetragon",
+            pod_name,
             "-c", "export-stdout",
         ]
         
@@ -166,19 +182,32 @@ class TetragonMonitor:
         console.print(table)
 
 
-def monitor_k8s(namespace: str = "kube-system", duration: Optional[int] = None):
+def monitor_k8s(
+    namespace: str = "kube-system",
+    duration: Optional[int] = None,
+    output_file: Optional[Path] = None,
+    output_format: str = "console",
+):
     """
     Monitor Kubernetes cluster for AI agent activity.
     
     Args:
         namespace: Tetragon namespace
         duration: Monitoring duration in seconds (None = infinite)
+        output_file: Path to output file (for json/jsonl formats)
+        output_format: Output format: "console", "json", or "jsonl"
     """
     monitor = TetragonMonitor(namespace=namespace)
     
-    console.print("[bold green]🔍 Monitoring Kubernetes cluster for AI agents...[/bold green]")
-    console.print(f"Tetragon namespace: {namespace}")
-    console.print("Press Ctrl+C to stop\n")
+    # Setup JSON logger if needed
+    json_logger = None
+    if output_format in ["json", "jsonl"]:
+        json_logger = JSONLogger(output_file=output_file, format=output_format)
+    
+    if output_format == "console":
+        console.print("[bold green]🔍 Monitoring Kubernetes cluster for AI agents...[/bold green]")
+        console.print(f"Tetragon namespace: {namespace}")
+        console.print("Press Ctrl+C to stop\n")
     
     try:
         start_time = datetime.now()
@@ -187,7 +216,13 @@ def monitor_k8s(namespace: str = "kube-system", duration: Optional[int] = None):
             detection = monitor.detect_llm_connections(event)
             
             if detection:
-                monitor.display_detection(detection)
+                # Console output
+                if output_format == "console":
+                    monitor.display_detection(detection)
+                
+                # JSON output
+                if json_logger:
+                    json_logger.log_detection(detection)
             
             # Check duration
             if duration:
@@ -198,5 +233,11 @@ def monitor_k8s(namespace: str = "kube-system", duration: Optional[int] = None):
     except KeyboardInterrupt:
         pass
     finally:
-        console.print("\n" + "="*60)
-        monitor.display_summary()
+        if json_logger:
+            json_logger.close()
+        
+        if output_format == "console":
+            console.print("\n" + "="*60)
+            monitor.display_summary()
+        elif output_file:
+            console.print(f"[green]✅ Detections saved to {output_file}[/green]")

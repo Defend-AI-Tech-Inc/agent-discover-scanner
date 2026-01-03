@@ -1,5 +1,6 @@
 import ast
 from pathlib import Path
+from typing import Optional
 
 import typer
 from rich.console import Console
@@ -439,6 +440,55 @@ def correlate(
             console.print(f"    Last Seen: {ghost.last_seen}\n")
 
     console.print(f"\n[green]✓ Inventory saved to: {output}[/green]")
+
+
+
+
+@app.command()
+def monitor_k8s(
+    namespace: str = typer.Option(
+        "kube-system",
+        "--namespace",
+        "-n",
+        help="Kubernetes namespace where Tetragon is deployed",
+    ),
+    duration: Optional[int] = typer.Option(
+        None,
+        "--duration",
+        "-d",
+        help="Monitoring duration in seconds (default: run until Ctrl+C)",
+    ),
+):
+    """
+    Monitor Kubernetes cluster for AI agent activity using Tetragon.
+    
+    Requires:
+    - Cilium Tetragon installed in the cluster
+    - kubectl configured and authenticated
+    - TracingPolicy deployed (see docs/TETRAGON_SETUP.md)
+    
+    Examples:
+        # Monitor indefinitely
+        agent-discover-scanner monitor-k8s
+        
+        # Monitor for 60 seconds
+        agent-discover-scanner monitor-k8s --duration 60
+        
+        # Monitor Tetragon in custom namespace
+        agent-discover-scanner monitor-k8s --namespace monitoring
+    """
+    from .monitors import monitor_k8s as run_monitor
+    
+    try:
+        run_monitor(namespace=namespace, duration=duration)
+    except FileNotFoundError:
+        console.print(
+            "[red]Error: kubectl not found. Please install kubectl and configure cluster access.[/red]"
+        )
+        raise typer.Exit(1)
+    except Exception as e:
+        console.print(f"[red]Error: {e}[/red]")
+        raise typer.Exit(1)
 
 
 if __name__ == "__main__":

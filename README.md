@@ -21,10 +21,11 @@
 AgentDiscover Scanner detects autonomous AI agents and Shadow AI in your codebase through:
 
 - 🔍 **Static Code Analysis** - AST-based detection across Python & JavaScript
+- ⚙️ **eBPF Runtime Detection** - Real-time Kubernetes monitoring via Cilium Tetragon
 - 🚨 **Shadow AI Detection** - Unmanaged LLM clients bypassing governance
 - 🤖 **Framework Detection** - AutoGen, CrewAI, LangChain, LangGraph support
 - 📦 **Dependency Scanning** - Analyze requirements.txt & package.json
-- 🌐 **Network Monitoring** - Detect active agents by their API traffic
+- 🌐 **Network Monitoring** - Detect active agents by their API traffic (local + Kubernetes)
 - 🔗 **Correlation Engine** - Match code findings with runtime behavior
 - 📊 **SARIF Output** - CI/CD integration ready
 
@@ -80,8 +81,45 @@ agent-discover-scanner scan /path/to/repo --format sarif --output results.sarif
 # Scan dependencies only
 agent-discover-scanner deps /path/to/repo
 
-# Monitor network for active agents (30 seconds)
+# Monitor local network for active agents (30 seconds)
 agent-discover-scanner monitor --duration 30
+
+### Kubernetes Monitoring (v1.1.0+) 🆕
+
+Monitor production Kubernetes clusters in real-time using Cilium Tetragon eBPF:
+```bash
+# Monitor cluster for AI agent activity
+agent-discover-scanner monitor-k8s
+
+# Monitor for specific duration  
+agent-discover-scanner monitor-k8s --duration 60
+
+# Save detections to JSONL file
+agent-discover-scanner monitor-k8s --output detections.jsonl --format jsonl
+
+# Monitor Tetragon in custom namespace
+agent-discover-scanner monitor-k8s --namespace monitoring
+```
+
+**Detects:**
+- OpenAI, Anthropic, Google AI, Cohere API connections
+- Azure OpenAI, AWS Bedrock traffic  
+- Vector databases (Pinecone, Weaviate, Qdrant)
+- Full pod/container/workload attribution
+
+**Requires:**
+- Cilium Tetragon installed in cluster
+- kubectl configured and authenticated
+- See [Tetragon Setup Guide](docs/TETRAGON_SETUP.md)
+
+**Example Detection:**
+```
+🚨 AI Agent Detected! production/trading-bot -> OpenAI (162.159.140.245:443)
+Pod: trading/high-frequency-trader-7d8f9
+Workload: Deployment/trading-bot
+Binary: /usr/bin/python3
+```
+
 
 # Correlate code + network findings
 agent-discover-scanner correlate \

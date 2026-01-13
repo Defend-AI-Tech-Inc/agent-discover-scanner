@@ -107,12 +107,20 @@ agent-discover-scanner scan /path/to/repo
 agent-discover-scanner scan . --format sarif --output results.sarif
 ```
 
+**Detects:** AI frameworks, ungoverned LLM clients, risky dependencies
+
+---
+
 #### 🌐 Monitor Network (Developer Machines, Local Testing)
 
 ```bash
 # Monitor network traffic for 60 seconds
 agent-discover-scanner monitor --duration 60
 ```
+
+**Detects:** Live API connections to OpenAI, Anthropic, Google AI, Cohere, vector databases
+
+---
 
 #### ⚙️ Watch Kubernetes (Production Clusters)
 
@@ -124,7 +132,27 @@ agent-discover-scanner monitor-k8s
 agent-discover-scanner monitor-k8s --output detections.jsonl
 ```
 
+**Detects:** AI agents with full pod/container/workload attribution
+
 **Requires:** [Cilium Tetragon setup](docs/TETRAGON_SETUP.md)
+
+**Example Detection:**
+```
+🚨 AI Agent Detected! production/trading-bot -> OpenAI (api.openai.com:443)
+
+Detection Details:
+├─ Pod: trading/high-frequency-trader-7d8f9
+├─ Namespace: trading
+├─ Workload: Deployment/trading-bot
+├─ Container: trading-algo
+├─ Binary: /usr/bin/python3
+├─ Process: python3 bot.py
+└─ Provider: OpenAI
+
+Classification: CONFIRMED (code + active network)
+```
+
+---
 
 #### 🔗 Correlate Results (Complete Inventory)
 
@@ -135,28 +163,11 @@ agent-discover-scanner correlate \
   --network-scan network-findings.json
 ```
 
+**Result:** Complete agent inventory with CONFIRMED, UNKNOWN, ZOMBIE, and GHOST classifications
+
+---
+
 [See full documentation →](#documentation)
-```
-
-**Detects:**
-- OpenAI, Anthropic, Google AI, Cohere API connections
-- Azure OpenAI, AWS Bedrock traffic  
-- Vector databases (Pinecone, Weaviate, Qdrant)
-- Full pod/container/workload attribution
-
-**Requires:**
-- Cilium Tetragon installed in cluster
-- kubectl configured and authenticated
-- See [Tetragon Setup Guide](docs/TETRAGON_SETUP.md)
-
-**Example Detection:**
-```
-🚨 AI Agent Detected! production/trading-bot -> OpenAI (162.159.140.245:443)
-Pod: trading/high-frequency-trader-7d8f9
-Workload: Deployment/trading-bot
-Binary: /usr/bin/python3
-```
-
 
 # Correlate code + network findings
 agent-discover-scanner correlate \
@@ -361,6 +372,6 @@ If you find this tool useful, please star the repository!
 
 ---
 
-**Built with ❤️ by the DefendAI team**
+**Built by the DefendAI team**
 
 *Securing the future of autonomous AI*

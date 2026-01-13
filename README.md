@@ -2,7 +2,9 @@
 
 <div align="center">
 
-**Open Source AI Agent Detection Tool**
+**Multi-Layer AI Agent Detection: Code • Network • Kubernetes**
+
+> Find AI agents everywhere with static analysis, network monitoring, and eBPF runtime detection
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Python 3.12+](https://img.shields.io/badge/python-3.12+-blue.svg)](https://www.python.org/downloads/)
@@ -15,19 +17,47 @@
 </div>
 
 ---
+## 🎯 Three Detection Layers for Complete Visibility
 
-## 🎯 What It Does
+### 1️⃣ Static Code Analysis
+Scan repositories to find AI frameworks and Shadow AI
+* 🔍 Python & JavaScript/TypeScript support (AST-based)
+* 🤖 Detects: AutoGen, CrewAI, LangChain, LangGraph
+* 🚨 Finds ungoverned LLM clients (Shadow AI)
+* 📦 Analyzes dependencies (requirements.txt, package.json)
+* 📊 CI/CD ready (SARIF output for GitHub Security)
 
-AgentDiscover Scanner detects autonomous AI agents and Shadow AI in your codebase through:
+### 2️⃣ Network Traffic Monitoring  
+Monitor active agents by their API connections
+* 🌐 Works on local machines and servers
+* 🔌 Detects: OpenAI, Anthropic, Google AI, Cohere, AWS Bedrock
+* 💾 Tracks vector databases (Pinecone, Weaviate, Qdrant)
+* ⚡ Real-time detection as agents make API calls
 
-- 🔍 **Static Code Analysis** - AST-based detection across Python & JavaScript
-- ⚙️ **eBPF Runtime Detection** - Real-time Kubernetes monitoring via Cilium Tetragon
-- 🚨 **Shadow AI Detection** - Unmanaged LLM clients bypassing governance
-- 🤖 **Framework Detection** - AutoGen, CrewAI, LangChain, LangGraph support
-- 📦 **Dependency Scanning** - Analyze requirements.txt & package.json
-- 🌐 **Network Monitoring** - Detect active agents by their API traffic (local + Kubernetes)
-- 🔗 **Correlation Engine** - Match code findings with runtime behavior
-- 📊 **SARIF Output** - CI/CD integration ready
+### 3️⃣ Kubernetes Runtime Detection (NEW in v1.1.0)
+Get production visibility with eBPF monitoring
+* ⚙️ Kernel-level visibility via Cilium Tetragon
+* 🎯 Full attribution: pod, container, workload, binary
+* 🚀 Zero code changes required
+* 📍 Continuous cluster monitoring
+
+### 🔗 Correlation Engine
+* Matches code findings with runtime behavior
+* Classifies agents: **CONFIRMED**, **UNKNOWN**, **ZOMBIE**, **GHOST**
+* Creates complete agent inventory across all three layers
+
+## 💡 Why AgentDiscover Scanner?
+
+Most tools only cover one detection layer. AgentDiscover Scanner covers all three:
+
+| Detection Layer | Snyk/Semgrep | Network Tools | K8s Security | AgentDiscover |
+|----------------|--------------|---------------|--------------|---------------|
+| **Code Scanning** | ✅ | ❌ | ❌ | ✅ |
+| **Network Monitoring** | ❌ | ✅ | ❌ | ✅ |
+| **K8s Runtime** | ❌ | ❌ | ✅ | ✅ |
+| **Correlation Engine** | ❌ | ❌ | ❌ | ✅ |
+
+**Result:** Complete visibility from development to production, not just one layer.
 
 ## ✨ Features
 
@@ -56,49 +86,56 @@ agent-discover-scanner scan ./my-project
 ## 🚀 Quick Start
 
 ### Installation
-```bash
-# Option 1: Using uv (recommended)
-uv tool install agent-discover-scanner
 
-# Option 2: Using pipx
+```bash
+# Using pipx (recommended)
 pipx install agent-discover-scanner
 
-# Option 3: Using pip
+# Using pip
 pip install agent-discover-scanner
 ```
 
-### Basic Usage
+### Choose Your Detection Mode
+
+#### 🔍 Scan Code (Security Audits, CI/CD)
+
 ```bash
-# Scan a repository
+# Scan repository
 agent-discover-scanner scan /path/to/repo
 
-# Scan with verbose output
-agent-discover-scanner scan /path/to/repo --verbose
-
 # Generate SARIF for CI/CD
-agent-discover-scanner scan /path/to/repo --format sarif --output results.sarif
+agent-discover-scanner scan . --format sarif --output results.sarif
+```
 
-# Scan dependencies only
-agent-discover-scanner deps /path/to/repo
+#### 🌐 Monitor Network (Developer Machines, Local Testing)
 
-# Monitor local network for active agents (30 seconds)
-agent-discover-scanner monitor --duration 30
-
-### Kubernetes Monitoring (v1.1.0+) 🆕
-
-Monitor production Kubernetes clusters in real-time using Cilium Tetragon eBPF:
 ```bash
-# Monitor cluster for AI agent activity
+# Monitor network traffic for 60 seconds
+agent-discover-scanner monitor --duration 60
+```
+
+#### ⚙️ Watch Kubernetes (Production Clusters)
+
+```bash
+# Monitor K8s cluster in real-time
 agent-discover-scanner monitor-k8s
 
-# Monitor for specific duration  
-agent-discover-scanner monitor-k8s --duration 60
+# Save detections
+agent-discover-scanner monitor-k8s --output detections.jsonl
+```
 
-# Save detections to JSONL file
-agent-discover-scanner monitor-k8s --output detections.jsonl --format jsonl
+**Requires:** [Cilium Tetragon setup](docs/TETRAGON_SETUP.md)
 
-# Monitor Tetragon in custom namespace
-agent-discover-scanner monitor-k8s --namespace monitoring
+#### 🔗 Correlate Results (Complete Inventory)
+
+```bash
+# Combine all detection layers
+agent-discover-scanner correlate \
+  --code-scan results.sarif \
+  --network-scan network-findings.json
+```
+
+[See full documentation →](#documentation)
 ```
 
 **Detects:**

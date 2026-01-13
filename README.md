@@ -169,12 +169,6 @@ agent-discover-scanner correlate \
 
 [See full documentation →](#documentation)
 
-# Correlate code + network findings
-agent-discover-scanner correlate \
-  --code-scan results.sarif \
-  --network-scan network-findings.json
-```
-
 ## 📊 Example Output
 
 ### Code Scan
@@ -372,6 +366,6 @@ If you find this tool useful, please star the repository!
 
 ---
 
-**Built by the DefendAI team**
+**Built with ❤️ by the DefendAI team**
 
 *Securing the future of autonomous AI*

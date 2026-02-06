@@ -45,3 +45,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 [Unreleased]: https://github.com/Defend-AI-Tech-Inc/agent-discover-scanner/compare/v1.0.0-rc1...HEAD
 [1.0.0-rc1]: https://github.com/Defend-AI-Tech-Inc/agent-discover-scanner/compare/v1.0.0...v1.0.0-rc1
 [1.0.0]: https://github.com/Defend-AI-Tech-Inc/agent-discover-scanner/releases/tag/v1.0.0
+
+## [1.1.1] - 2026-02-06
+
+### Changed
+- Updated package metadata for PyPI
+- Changed author from "DefendAI" to "Mohamed Waseem" for proper attribution
+- Improved package description to highlight Kubernetes monitoring capability
+- Added comprehensive keywords for better discoverability
+- Added project URLs (homepage, documentation, repository, issues, changelog)
+
+### Fixed
+- Installation instructions now work correctly via PyPI

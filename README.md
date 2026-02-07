@@ -128,46 +128,43 @@ agent-discover-scanner correlate \
 ```
 
 ## 📊 Example Output
+### Code Scan Results
 
-### Code Scan
-```
-Scan Complete!
-┏━━━━━━━━━━━━━━━━━━━━━━━━━━━┳━━━━━━━┓
-┃ Metric                    ┃ Value ┃
-┡━━━━━━━━━━━━━━━━━━━━━━━━━━━╇━━━━━━━┩
-│ Files Scanned             │ 1,112 │
-│   • Python                │ 890   │
-│   • JavaScript/TypeScript │ 222   │
-│ Total Findings            │ 275   │
-│   • Errors (Shadow AI)    │ 126   │
-│   • Warnings (Agents)     │ 127   │
-│   • Notes                 │ 22    │
-└───────────────────────────┴───────┘
+**Files Analyzed:**
+- Total: 1,112 files
+- Python: 890 files
+- JavaScript/TypeScript: 222 files
 
-Findings by Rule:
-  DAI001 (AutoGen):     5 finding(s)
-  DAI002 (CrewAI):    130 finding(s)
-  DAI003 (LangChain):  23 finding(s)
-  DAI004 (Shadow AI): 117 finding(s)
-```
+**Findings:**
+- Total: 275 findings
+- Errors (Shadow AI): 126
+- Warnings (Agents): 127
+- Notes: 22
+
+**Detection Breakdown:**
+- `DAI001` AutoGen: 5 findings
+- `DAI002` CrewAI: 130 findings
+- `DAI003` LangChain: 23 findings
+- `DAI004` Shadow AI: 117 findings
 
 ### Correlation Report
-```
-Correlation Complete!
-┏━━━━━━━━━━━━━━━━┳━━━━━━━┳━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓
-┃ Classification ┃ Count ┃ Description                    ┃
-┡━━━━━━━━━━━━━━━━╇━━━━━━━╇━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┩
-│ CONFIRMED      │ 111   │ Code + Network (Active)        │
-│ UNKNOWN        │ 164   │ Code Only (Not Yet Active)     │
-│ ZOMBIE         │ 0     │ Code But No Traffic            │
-│ GHOST          │ 1     │ Traffic But No Code (CRITICAL) │
-└────────────────┴───────┴──────────────────────────────────┘
 
-⚠️  GHOST AGENTS DETECTED!
-Active agents with NO corresponding code found:
-  • Provider: pinecone
-    Process: python
-    Last Seen: 2025-12-19T16:00:00Z
+**Agent Classifications:**
+
+| Type | Count | Description |
+|------|-------|-------------|
+| ✅ **CONFIRMED** | 111 | Code + Network (Active) |
+| ⚠️ **UNKNOWN** | 164 | Code Only (Not Yet Active) |
+| 💀 **ZOMBIE** | 0 | Code But No Traffic |
+| 👻 **GHOST** | 1 | Traffic But No Code **(CRITICAL)** |
+
+**⚠️ GHOST AGENT ALERT**  
+Active agent detected with NO corresponding code:
+- Provider: Pinecone
+- Process: Python
+- Last Seen: 2025-12-19
+- **Action Required:** Investigate unauthorized agent!
+
 ```
 
 ## 💡 Use Cases

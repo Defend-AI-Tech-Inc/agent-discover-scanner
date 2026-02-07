@@ -2,9 +2,7 @@
 
 <div align="center">
 
-**Multi-Layer AI Agent Detection: Code • Network • Kubernetes**
-
-> Find AI agents everywhere with static analysis, network monitoring, and eBPF runtime detection
+**Open Source AI Agent Detection Tool**
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Python 3.12+](https://img.shields.io/badge/python-3.12+-blue.svg)](https://www.python.org/downloads/)
@@ -17,47 +15,19 @@
 </div>
 
 ---
-## 🎯 Three Detection Layers for Complete Visibility
 
-### 1️⃣ Static Code Analysis
-Scan repositories to find AI frameworks and Shadow AI
-* 🔍 Python & JavaScript/TypeScript support (AST-based)
-* 🤖 Detects: AutoGen, CrewAI, LangChain, LangGraph
-* 🚨 Finds ungoverned LLM clients (Shadow AI)
-* 📦 Analyzes dependencies (requirements.txt, package.json)
-* 📊 CI/CD ready (SARIF output for GitHub Security)
+## 🎯 What It Does
 
-### 2️⃣ Network Traffic Monitoring  
-Monitor active agents by their API connections
-* 🌐 Works on local machines and servers
-* 🔌 Detects: OpenAI, Anthropic, Google AI, Cohere, AWS Bedrock
-* 💾 Tracks vector databases (Pinecone, Weaviate, Qdrant)
-* ⚡ Real-time detection as agents make API calls
+AgentDiscover Scanner detects autonomous AI agents and Shadow AI in your codebase through:
 
-### 3️⃣ Kubernetes Runtime Detection (NEW in v1.1.0)
-Get production visibility with eBPF monitoring
-* ⚙️ Kernel-level visibility via Cilium Tetragon
-* 🎯 Full attribution: pod, container, workload, binary
-* 🚀 Zero code changes required
-* 📍 Continuous cluster monitoring
-
-### 🔗 Correlation Engine
-* Matches code findings with runtime behavior
-* Classifies agents: **CONFIRMED**, **UNKNOWN**, **ZOMBIE**, **GHOST**
-* Creates complete agent inventory across all three layers
-
-## 💡 Why AgentDiscover Scanner?
-
-Most tools only cover one detection layer. AgentDiscover Scanner covers all three:
-
-| Detection Layer | Snyk/Semgrep | Network Tools | K8s Security | AgentDiscover |
-|----------------|--------------|---------------|--------------|---------------|
-| **Code Scanning** | ✅ | ❌ | ❌ | ✅ |
-| **Network Monitoring** | ❌ | ✅ | ❌ | ✅ |
-| **K8s Runtime** | ❌ | ❌ | ✅ | ✅ |
-| **Correlation Engine** | ❌ | ❌ | ❌ | ✅ |
-
-**Result:** Complete visibility from development to production, not just one layer.
+- 🔍 **Static Code Analysis** - AST-based detection across Python & JavaScript
+- ⚙️ **eBPF Runtime Detection** - Real-time Kubernetes monitoring via Cilium Tetragon
+- 🚨 **Shadow AI Detection** - Unmanaged LLM clients bypassing governance
+- 🤖 **Framework Detection** - AutoGen, CrewAI, LangChain, LangGraph support
+- 📦 **Dependency Scanning** - Analyze requirements.txt & package.json
+- 🌐 **Network Monitoring** - Detect active agents by their API traffic (local + Kubernetes)
+- 🔗 **Correlation Engine** - Match code findings with runtime behavior
+- 📊 **SARIF Output** - CI/CD integration ready
 
 ## ✨ Features
 
@@ -86,88 +56,76 @@ agent-discover-scanner scan ./my-project
 ## 🚀 Quick Start
 
 ### Installation
-
 ```bash
-# Using pipx (recommended)
+# Option 1: Using uv (recommended)
+uv tool install agent-discover-scanner
+
+# Option 2: Using pipx
 pipx install agent-discover-scanner
 
-# Using pip
+# Option 3: Using pip
 pip install agent-discover-scanner
 ```
 
-### Choose Your Detection Mode
-
-#### 🔍 Scan Code (Security Audits, CI/CD)
-
+### Basic Usage
 ```bash
-# Scan repository
+# Scan a repository
 agent-discover-scanner scan /path/to/repo
 
+# Scan with verbose output
+agent-discover-scanner scan /path/to/repo --verbose
+
 # Generate SARIF for CI/CD
-agent-discover-scanner scan . --format sarif --output results.sarif
-```
+agent-discover-scanner scan /path/to/repo --format sarif --output results.sarif
 
-**Detects:** AI frameworks, ungoverned LLM clients, risky dependencies
+# Scan dependencies only
+agent-discover-scanner deps /path/to/repo
 
----
+# Monitor local network for active agents (30 seconds)
+agent-discover-scanner monitor --duration 30
 
-#### 🌐 Monitor Network (Developer Machines, Local Testing)
+### Kubernetes Monitoring (v1.1.0+) 🆕
 
+Monitor production Kubernetes clusters in real-time using Cilium Tetragon eBPF:
 ```bash
-# Monitor network traffic for 60 seconds
-agent-discover-scanner monitor --duration 60
-```
-
-**Detects:** Live API connections to OpenAI, Anthropic, Google AI, Cohere, vector databases
-
----
-
-#### ⚙️ Watch Kubernetes (Production Clusters)
-
-```bash
-# Monitor K8s cluster in real-time
+# Monitor cluster for AI agent activity
 agent-discover-scanner monitor-k8s
 
-# Save detections
-agent-discover-scanner monitor-k8s --output detections.jsonl
+# Monitor for specific duration  
+agent-discover-scanner monitor-k8s --duration 60
+
+# Save detections to JSONL file
+agent-discover-scanner monitor-k8s --output detections.jsonl --format jsonl
+
+# Monitor Tetragon in custom namespace
+agent-discover-scanner monitor-k8s --namespace monitoring
 ```
 
-**Detects:** AI agents with full pod/container/workload attribution
+**Detects:**
+- OpenAI, Anthropic, Google AI, Cohere API connections
+- Azure OpenAI, AWS Bedrock traffic  
+- Vector databases (Pinecone, Weaviate, Qdrant)
+- Full pod/container/workload attribution
 
-**Requires:** [Cilium Tetragon setup](docs/TETRAGON_SETUP.md)
+**Requires:**
+- Cilium Tetragon installed in cluster
+- kubectl configured and authenticated
+- See [Tetragon Setup Guide](docs/TETRAGON_SETUP.md)
 
 **Example Detection:**
 ```
-🚨 AI Agent Detected! production/trading-bot -> OpenAI (api.openai.com:443)
-
-Detection Details:
-├─ Pod: trading/high-frequency-trader-7d8f9
-├─ Namespace: trading
-├─ Workload: Deployment/trading-bot
-├─ Container: trading-algo
-├─ Binary: /usr/bin/python3
-├─ Process: python3 bot.py
-└─ Provider: OpenAI
-
-Classification: CONFIRMED (code + active network)
+🚨 AI Agent Detected! production/trading-bot -> OpenAI (162.159.140.245:443)
+Pod: trading/high-frequency-trader-7d8f9
+Workload: Deployment/trading-bot
+Binary: /usr/bin/python3
 ```
 
----
 
-#### 🔗 Correlate Results (Complete Inventory)
-
-```bash
-# Combine all detection layers
+# Correlate code + network findings
 agent-discover-scanner correlate \
   --code-scan results.sarif \
   --network-scan network-findings.json
 ```
-
-**Result:** Complete agent inventory with CONFIRMED, UNKNOWN, ZOMBIE, and GHOST classifications
-
----
-
-[See full documentation →](#documentation)
 
 ## 📊 Example Output
 

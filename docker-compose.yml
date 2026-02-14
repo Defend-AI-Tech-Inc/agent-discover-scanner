@@ -1,0 +1,13 @@
+version: '3.8'
+
+services:
+  scanner:
+    build: .
+    image: defendai/agent-discover-scanner:2.0.0
+    volumes:
+      - ./scans:/scans
+      - ~/.gitconfig:/root/.gitconfig:ro
+      - ~/.ssh:/root/.ssh:ro
+    environment:
+      - GITHUB_TOKEN=${GITHUB_TOKEN}
+    command: agent-discover-scanner scan --layers 1,4 --output /scans/report.md

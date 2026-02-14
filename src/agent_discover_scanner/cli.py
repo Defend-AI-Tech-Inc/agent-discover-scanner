@@ -23,6 +23,12 @@ from agent_discover_scanner.scanner import Scanner
 from agent_discover_scanner.signatures import SIGNATURE_REGISTRY
 from agent_discover_scanner.visitor import ContextAwareVisitor
 
+#layer4 imports
+from agent_discover_scanner.layer4.osquery_executor import OsqueryExecutor
+from agent_discover_scanner.layer4.result_parser import OsqueryResultParser
+from agent_discover_scanner.reports.layer4_report import Layer4Report
+import socket
+
 app = typer.Typer(help="AgentDiscover Scanner: Detect Autonomous AI Agents and Shadow AI")
 console = Console()
 
@@ -442,8 +448,6 @@ def correlate(
     console.print(f"\n[green]✓ Inventory saved to: {output}[/green]")
 
 
-
-
 @app.command()
 def monitor_k8s(
     namespace: str = typer.Option(
@@ -493,7 +497,7 @@ def monitor_k8s(
         agent-discover-scanner monitor-k8s --namespace monitoring
     """
     from pathlib import Path
-    from .monitors import monitor_k8s as run_monitor
+    from agent_discover_scanner.monitors import monitor_k8s as run_monitor
     
     output_path = Path(output_file) if output_file else None
     
@@ -512,9 +516,155 @@ def monitor_k8s(
     except Exception as e:
         console.print(f"[red]Error: {e}[/red]")
         raise typer.Exit(1)
-    except Exception as e:
-        console.print(f"[red]Error: {e}[/red]")
+
+
+#@app.command()
+@app.command()
+def endpoint(
+    output: Optional[Path] = typer.Option(
+        None,
+        "--output",
+        "-o",
+        help="Output file path (JSON or Markdown)"
+    ),
+    output_format: str = typer.Option(
+        "markdown",
+        "--format",
+        "-f",
+        help="Output format: json or markdown"
+    ),
+):
+    """
+    Endpoint Discovery: Scan local endpoint for Shadow AI using osquery.
+    
+    Discovers AI usage on this machine:
+    - Desktop AI applications (ChatGPT, Claude, Cursor)
+    - AI packages (pip, npm: openai, langchain, etc.)
+    - Active connections to AI services
+    - Browser-based AI usage
+    
+    Requires osquery to be installed:
+      macOS:   brew install osquery
+      Windows: choco install osquery
+      Linux:   See https://osquery.io/downloads
+    """
+    from rich.console import Console
+    from rich.table import Table
+    import subprocess
+    import json
+    
+    console = Console()
+    
+    # Check if osquery is installed
+    try:
+        subprocess.run(
+            ["osqueryi", "--version"],
+            capture_output=True,
+            timeout=5,
+            check=True
+        )
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        console.print("\n[red]✗ Error: osquery not installed[/red]\n")
+        console.print("[yellow]Install osquery:[/yellow]")
+        console.print("  macOS:   [cyan]brew install osquery[/cyan]")
+        console.print("  Windows: [cyan]choco install osquery[/cyan]")
+        console.print("  Linux:   [cyan]https://osquery.io/downloads[/cyan]")
+        console.print("\n[yellow]Full setup guide:[/yellow]")
+        console.print("  https://github.com/Defend-AI-Tech-Inc/agent-discover-scanner/blob/main/docs/layer4-setup.md")
         raise typer.Exit(1)
+    
+    console.print("\n[bold blue]Endpoint Discovery: Endpoint Discovery (Shadow AI)[/bold blue]\n")
+    
+    # Execute osquery
+    with console.status("[bold yellow]Running osquery scans...", spinner="dots"):
+        executor = OsqueryExecutor()
+        raw_results = executor.discover_all()
+    
+    # Convert to model
+    hostname = socket.gethostname()
+    endpoint = OsqueryResultParser.create_endpoint_discovery(
+        hostname=hostname,
+        osquery_results=raw_results
+    )
+    
+    # Generate report
+    report = Layer4Report([endpoint])
+    summary = report.generate_summary()
+    
+    # Display summary
+    console.print("\n[bold green]✓ Scan Complete[/bold green]\n")
+    
+    summary_table = Table(show_header=False, box=None)
+    summary_table.add_row("[cyan]Hostname:", f"[white]{endpoint.hostname}")
+    summary_table.add_row("[cyan]OS:", f"[white]{endpoint.os_type} {endpoint.os_version}")
+    summary_table.add_row("[cyan]Total AI Instances:", f"[white]{endpoint.total_ai_instances}")
+    summary_table.add_row("[cyan]Risk Score:", f"[white]{endpoint.risk_score}/100")
+    console.print(summary_table)
+    
+    # Show findings
+    if endpoint.applications:
+        console.print(f"\n[yellow]Desktop Applications ({len(endpoint.applications)}):[/yellow]")
+        for app in endpoint.applications[:5]:
+            console.print(f"  • {app.name} [dim]v{app.version}[/dim]")
+    
+    if endpoint.packages:
+        console.print(f"\n[yellow]AI Packages ({len(endpoint.packages)}):[/yellow]")
+        for pkg in endpoint.packages[:5]:
+            console.print(f"  • {pkg.name} [dim]v{pkg.version} ({pkg.package_manager})[/dim]")
+    
+    if endpoint.connections:
+        console.print(f"\n[yellow]Active AI Connections ({len(endpoint.connections)}):[/yellow]")
+        for conn in endpoint.connections[:5]:
+            console.print(f"  • {conn.process_name} → {conn.remote_hostname}:{conn.remote_port}")
+    
+    # Save report
+    if output:
+        output_path = output
+    else:
+        output_path = Path("layer4_report.md" if output_format == "markdown" else "layer4_report.json")
+    
+    if output_format == "markdown":
+        report_content = report.generate_markdown_report()
+        output_path.write_text(report_content)
+    else:
+        # JSON format
+        json_data = {
+            "scan_timestamp": endpoint.scan_timestamp.isoformat(),
+            "hostname": endpoint.hostname,
+            "os_type": endpoint.os_type,
+            "os_version": endpoint.os_version,
+            "username": endpoint.username,
+            "risk_score": endpoint.risk_score,
+            "total_ai_instances": endpoint.total_ai_instances,
+            "applications": [
+                {
+                    "name": app.name,
+                    "version": app.version,
+                    "vendor": app.vendor,
+                    "install_path": app.install_path
+                }
+                for app in endpoint.applications
+            ],
+            "packages": [
+                {
+                    "name": pkg.name,
+                    "version": pkg.version,
+                    "package_manager": pkg.package_manager
+                }
+                for pkg in endpoint.packages
+            ],
+            "connections": [
+                {
+                    "process_name": conn.process_name,
+                    "remote_hostname": conn.remote_hostname,
+                    "remote_port": conn.remote_port
+                }
+                for conn in endpoint.connections
+            ]
+        }
+        output_path.write_text(json.dumps(json_data, indent=2))
+    
+    console.print(f"\n[green]✓ Report saved to:[/green] [cyan]{output_path}[/cyan]\n")
 
 
 if __name__ == "__main__":

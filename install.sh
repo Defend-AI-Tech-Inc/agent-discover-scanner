@@ -244,7 +244,7 @@ fi
 
 # Verify installation
 if command_exists agent-discover-scanner; then
-    SCANNER_VERSION=$(agent-discover-scanner --version 2>/dev/null || echo "unknown")
+    SCANNER_VERSION=$(agent-discover-scanner --help 2>/dev/null || echo "unknown")
     log_success "Scanner installed: $SCANNER_VERSION"
 else
     log_error "Scanner installation failed"
@@ -421,7 +421,7 @@ log_info "Verifying installation..."
 echo ""
 
 # Test scanner
-if agent-discover-scanner --version >/dev/null 2>&1; then
+if agent-discover-scanner --help >/dev/null 2>&1; then
     log_success "✓ AgentDiscover Scanner working"
 else
     log_error "✗ Scanner verification failed"

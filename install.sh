@@ -290,13 +290,13 @@ if [ "$INSTALL_LAYER_4" = true ]; then
                     $SUDO mkdir -p /etc/apt/keyrings
                     
                     # Try modern method first
-                    if curl -fsSL https://pkg.osquery.io/deb/pubkey.gpg | sudo gpg --dearmor -o /etc/apt/keyrings/osquery.gpg 2>/dev/null; then
-                        echo "deb [arch=amd64 signed-by=/etc/apt/keyrings/osquery.gpg] https://pkg.osquery.io/deb deb main" | sudo tee /etc/apt/sources.list.d/osquery.list
+                    if curl -fsSL https://pkg.osquery.io/deb/pubkey.gpg | $SUDO gpg --dearmor -o /etc/apt/keyrings/osquery.gpg 2>/dev/null; then
+                        echo "deb [arch=amd64 signed-by=/etc/apt/keyrings/osquery.gpg] https://pkg.osquery.io/deb deb main" | $SUDO tee /etc/apt/sources.list.d/osquery.list
                     else
                         # Fallback to deprecated apt-key for older systems
                         log_warning "Using deprecated apt-key method (consider upgrading your system)"
                         $SUDO apt-key adv --keyserver hkp://keyserver.ubuntu.com:80 --recv-keys $OSQUERY_KEY 2>/dev/null || true
-                        echo "deb [arch=amd64] https://pkg.osquery.io/deb deb main" | sudo tee /etc/apt/sources.list.d/osquery.list
+                        echo "deb [arch=amd64] https://pkg.osquery.io/deb deb main" | $SUDO tee /etc/apt/sources.list.d/osquery.list
                     fi
                     
                     $SUDO apt-get update
@@ -305,7 +305,7 @@ if [ "$INSTALL_LAYER_4" = true ]; then
                 elif [ "$DISTRO" = "centos" ] || [ "$DISTRO" = "rhel" ] || [ "$DISTRO" = "fedora" ]; then
                     log_info "Installing osquery via yum/dnf..."
                     
-                    curl -L https://pkg.osquery.io/rpm/GPG | sudo tee /etc/pki/rpm-gpg/RPM-GPG-KEY-osquery
+                    curl -L https://pkg.osquery.io/rpm/GPG | $SUDO tee /etc/pki/rpm-gpg/RPM-GPG-KEY-osquery
                     
                     # Use dnf if available (Fedora 22+, RHEL 8+), otherwise yum
                     if command_exists dnf; then

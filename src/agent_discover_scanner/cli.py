@@ -292,36 +292,38 @@ def monitor(
     """
     Monitor network traffic for active AI agent connections.
 
-    ⚠️  EXPERIMENTAL: Requires lsof (Mac/Linux only)
+    Uses psutil to detect active connections to AI services and vector databases.
+    Detects RAG patterns when both AI services and vector DBs are used together.
     """
-    from agent_discover_scanner.network_monitor import monitor_network
-
-    console.print("[yellow]⚠️  EXPERIMENTAL FEATURE[/yellow]")
-    console.print("[dim]Network monitoring requires 'lsof' command (Mac/Linux only)[/dim]\n")
+    from agent_discover_scanner.network_monitor import NetworkMonitor
 
     console.print(
         f"[bold green]Starting network monitoring for {duration} seconds...[/bold green]\n"
     )
     console.print("[cyan]Detecting connections to:[/cyan]")
-    console.print("  • OpenAI API")
-    console.print("  • Anthropic API")
-    console.print("  • Google AI")
-    console.print("  • Vector Databases (Pinecone, Weaviate, etc.)\n")
+    console.print("  • AI Services (OpenAI, Anthropic, Google AI, etc.)")
+    console.print("  • Vector Databases (Pinecone, Weaviate, Qdrant, etc.)")
+    console.print("  • RAG Patterns (AI + Vector DB combinations)\n")
 
     try:
-        summary = monitor_network(duration, Path(output))
-    except FileNotFoundError:
-        console.print("[red]❌ Error: 'lsof' command not found[/red]")
-        console.print("\n[yellow]💡 This feature requires:[/yellow]")
-        console.print("  • Mac or Linux operating system")
-        console.print("  • lsof utility (usually pre-installed)")
-        console.print("\n[dim]Windows users: Network monitoring not supported yet[/dim]")
+        monitor = NetworkMonitor()
+        summary = monitor.monitor(duration_seconds=duration)
+        
+        # Save report
+        monitor.save_report(summary, Path(output))
+        
+    except ImportError:
+        console.print("[red]❌ Error: psutil not installed[/red]")
+        console.print("\n[yellow]💡 Install psutil:[/yellow]")
+        console.print("  [cyan]pip install psutil[/cyan]")
         raise typer.Exit(code=1)
     except Exception as e:
         console.print(f"[red]❌ Monitoring error:[/red] {e}")
+        if "AccessDenied" in str(e) or "permission" in str(e).lower():
+            console.print("\n[yellow]💡 Tip: You may need elevated permissions to monitor network connections[/yellow]")
         raise typer.Exit(code=1)
 
-    # Display results
+    # Display results with Rich formatting
     console.print("\n[bold cyan]Network Monitoring Complete![/bold cyan]")
 
     table = Table(show_header=True, header_style="bold magenta")
@@ -331,24 +333,33 @@ def monitor(
     table.add_row("Scan Duration", f"{summary['scan_duration']}s")
     table.add_row("Total Connections", str(summary["total_connections"]))
     table.add_row(
-        "Unique Providers",
-        ", ".join(summary["unique_providers"]) if summary["unique_providers"] else "None",
+        "Unique Services",
+        ", ".join(summary["unique_services"]) if summary["unique_services"] else "None",
     )
-    table.add_row("RAG Patterns", str(len(summary["rag_patterns"])))
+    table.add_row("RAG Patterns Detected", f"[red]{len(summary['rag_patterns'])}[/red]")
 
     console.print(table)
 
-    if summary["unique_providers"]:
-        console.print("\n[bold]Active LLM Providers:[/bold]")
-        for provider in summary["unique_providers"]:
-            console.print(f"  [yellow]●[/yellow] {provider}")
+    if summary["services"]:
+        console.print("\n[bold]Connections by Service:[/bold]")
+        for service, count in sorted(summary["services"].items(), key=lambda x: x[1], reverse=True):
+            console.print(f"  [yellow]●[/yellow] {service}: {count}")
+
+    if summary["processes"]:
+        console.print("\n[bold]Connections by Process:[/bold]")
+        for process, count in sorted(summary["processes"].items(), key=lambda x: x[1], reverse=True):
+            console.print(f"  [cyan]●[/cyan] {process}: {count}")
 
     if summary["rag_patterns"]:
-        console.print("\n[bold red]RAG Pattern Detected![/bold red]")
+        console.print("\n[bold red]🚨 RAG Patterns Detected![/bold red]")
+        console.print("[red]Processes using both AI services and vector databases:[/red]")
         for pattern in summary["rag_patterns"]:
-            console.print(f"  • LLM: {pattern['llm_provider']} + Vector DB: {pattern['vector_db']}")
+            console.print(f"\n  [yellow]Process:[/yellow] {pattern['process']} (PID: {pattern['pid']})")
+            console.print(f"  [yellow]AI Services:[/yellow] {', '.join(pattern['ai_services'])}")
+            console.print(f"  [yellow]Vector DBs:[/yellow] {', '.join(pattern['vector_dbs'])}")
+            console.print(f"  [yellow]Confidence:[/yellow] {pattern['confidence']}")
 
-    console.print(f"\n[green]Results saved to: {output}[/green]")
+    console.print(f"\n[green]✓ Results saved to: {output}[/green]")
 
 
 @app.command()

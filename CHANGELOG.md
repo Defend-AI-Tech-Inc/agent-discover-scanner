@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.0.1] - 2026-02-15
+
+### Fixed
+- Improved network monitoring with psutil for better WebSocket detection
+- Now catches browser AI usage (Safari, Chrome, Edge)
+- Added psutil>=5.9.0 to dependencies
+
+### Changed
+- Replaced lsof-based network monitoring with psutil implementation
+- Network monitor now detects active connections including WebSockets
+
 ## [2.0.0] - 2026-02-13
 
 ### Added

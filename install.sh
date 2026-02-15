@@ -87,6 +87,20 @@ command_exists() {
     command -v "$1" >/dev/null 2>&1
 }
 
+# Function to detect Python
+detect_python() {
+    # Try different Python commands
+    for cmd in python3.12 python3.11 python3.10 python3.9 python3.8 python3 python; do
+        if command -v "$cmd" &> /dev/null; then
+            PYTHON_CMD="$cmd"
+            # Use sed instead of grep -oP for better compatibility
+            PYTHON_VERSION=$($cmd --version 2>&1 | sed -E 's/.*([0-9]+\.[0-9]+).*/\1/' | head -1)
+            return 0
+        fi
+    done
+    return 1
+}
+
 # Print banner
 echo ""
 echo "╔════════════════════════════════════════════════════════════╗"
@@ -147,21 +161,20 @@ fi
 # Step 3: Check Python version
 log_info "Checking Python version..."
 
-if command_exists python3; then
-    PYTHON_VERSION=$(python3 --version | awk '{print $2}')
-    PYTHON_MAJOR=$(echo $PYTHON_VERSION | cut -d. -f1)
-    PYTHON_MINOR=$(echo $PYTHON_VERSION | cut -d. -f2)
-    
-    if [ "$PYTHON_MAJOR" -ge 3 ] && [ "$PYTHON_MINOR" -ge 8 ]; then
-        log_success "Python $PYTHON_VERSION (meets requirement >= $PYTHON_MIN_VERSION)"
-    else
-        log_error "Python $PYTHON_VERSION is too old (need >= $PYTHON_MIN_VERSION)"
-        exit 1
-    fi
-else
-    log_error "Python 3 not found. Please install Python 3.8 or higher."
+if ! detect_python; then
+    log_error "Python 3 not found. Please install Python 3.10 or higher."
+    log_info "On Ubuntu/Debian: apt install python3"
+    log_info "On macOS: brew install python@3.10"
     exit 1
 fi
+
+# Verify minimum version (3.10)
+if ! $PYTHON_CMD -c "import sys; exit(0 if sys.version_info >= (3, 10) else 1)" 2>/dev/null; then
+    log_error "Python $PYTHON_VERSION found, but 3.10+ required"
+    exit 1
+fi
+
+log_success "Python $PYTHON_VERSION detected (meets requirement >= $PYTHON_MIN_VERSION)"
 
 # Step 4: Determine which layers to install
 log_info "Installation plan: Layers $INSTALL_LAYERS"
@@ -214,19 +227,19 @@ if [ "$INSTALL_FROM_SOURCE" = true ]; then
     
     if [ -f "setup.py" ]; then
         # Already in repo directory
-        pip3 install -e .
+        $PYTHON_CMD -m pip install -e .
     else
         # Need to clone repo
         if [ ! -d "agent-discover-scanner" ]; then
             git clone https://github.com/Defend-AI-Tech-Inc/agent-discover-scanner.git
         fi
         cd agent-discover-scanner
-        pip3 install -e .
+        $PYTHON_CMD -m pip install -e .
         cd ..
     fi
 else
     log_info "Installing from PyPI..."
-    pip3 install --upgrade agent-discover-scanner
+    $PYTHON_CMD -m pip install --upgrade agent-discover-scanner
 fi
 
 # Verify installation
@@ -259,24 +272,52 @@ if [ "$INSTALL_LAYER_4" = true ]; then
                 ;;
                 
             Linux)
+
+                            # Detect if we need sudo
+                if [ "$EUID" -eq 0 ]; then
+                    # Running as root (Docker, etc.)
+                    SUDO=""
+                else
+                    # Running as regular user
+                    SUDO="sudo"
+                fi
+
                 if [ "$DISTRO" = "ubuntu" ] || [ "$DISTRO" = "debian" ]; then
                     log_info "Installing osquery via apt..."
                     
+                    # Modern method: use signed-by instead of deprecated apt-key
                     export OSQUERY_KEY=1484120AC4E9F8A1A577AEEE97A80C63C9D8B80B
-                    sudo apt-key adv --keyserver hkp://keyserver.ubuntu.com:80 --recv-keys $OSQUERY_KEY 2>/dev/null || true
+                    $SUDO mkdir -p /etc/apt/keyrings
                     
-                    echo "deb [arch=amd64] https://pkg.osquery.io/deb deb main" | sudo tee /etc/apt/sources.list.d/osquery.list
+                    # Try modern method first
+                    if curl -fsSL https://pkg.osquery.io/deb/pubkey.gpg | sudo gpg --dearmor -o /etc/apt/keyrings/osquery.gpg 2>/dev/null; then
+                        echo "deb [arch=amd64 signed-by=/etc/apt/keyrings/osquery.gpg] https://pkg.osquery.io/deb deb main" | sudo tee /etc/apt/sources.list.d/osquery.list
+                    else
+                        # Fallback to deprecated apt-key for older systems
+                        log_warning "Using deprecated apt-key method (consider upgrading your system)"
+                        $SUDO apt-key adv --keyserver hkp://keyserver.ubuntu.com:80 --recv-keys $OSQUERY_KEY 2>/dev/null || true
+                        echo "deb [arch=amd64] https://pkg.osquery.io/deb deb main" | sudo tee /etc/apt/sources.list.d/osquery.list
+                    fi
                     
-                    sudo apt-get update
-                    sudo apt-get install -y osquery
+                    $SUDO apt-get update
+                    $SUDO apt-get install -y osquery
                     
                 elif [ "$DISTRO" = "centos" ] || [ "$DISTRO" = "rhel" ] || [ "$DISTRO" = "fedora" ]; then
                     log_info "Installing osquery via yum/dnf..."
                     
                     curl -L https://pkg.osquery.io/rpm/GPG | sudo tee /etc/pki/rpm-gpg/RPM-GPG-KEY-osquery
                     
-                    sudo yum-config-manager --add-repo https://pkg.osquery.io/rpm/osquery-s3-rpm.repo
-                    sudo yum install -y osquery
+                    # Use dnf if available (Fedora 22+, RHEL 8+), otherwise yum
+                    if command_exists dnf; then
+                        $SUDO dnf config-manager --add-repo https://pkg.osquery.io/rpm/osquery-s3-rpm.repo
+                        $SUDO dnf install -y osquery
+                    elif command_exists yum; then
+                        $SUDO yum-config-manager --add-repo https://pkg.osquery.io/rpm/osquery-s3-rpm.repo
+                        $SUDO yum install -y osquery
+                    else
+                        log_error "Neither dnf nor yum found"
+                        exit 1
+                    fi
                 else
                     log_error "Unsupported Linux distribution: $DISTRO"
                     log_info "Please install osquery manually: https://osquery.io/downloads"

@@ -448,27 +448,27 @@ if [ "$INSTALL_LAYER_2" = true ] || [ "$INSTALL_LAYER_3" = true ]; then
 fi
 
 # Step 9: Run test scan
-echo ""
-log_info "Running test scan..."
-echo ""
+#echo ""
+#log_info "Running test scan..."
+#echo ""
 
 # Determine which layers to test
-TEST_LAYERS=""
-[ "$INSTALL_LAYER_1" = true ] && TEST_LAYERS="${TEST_LAYERS}1,"
-[ "$INSTALL_LAYER_2" = true ] && TEST_LAYERS="${TEST_LAYERS}2,"
-[ "$INSTALL_LAYER_3" = true ] && TEST_LAYERS="${TEST_LAYERS}3,"
-[ "$INSTALL_LAYER_4" = true ] && TEST_LAYERS="${TEST_LAYERS}4,"
-TEST_LAYERS=${TEST_LAYERS%,}  # Remove trailing comma
-
-if [ -n "$TEST_LAYERS" ]; then
-    agent-discover-scanner scan --layers "$TEST_LAYERS" --output test_scan_report.md || true
-    
-    if [ -f "test_scan_report.md" ]; then
-        log_success "Test scan completed: test_scan_report.md"
-    fi
-else
-    log_warning "No layers to test"
-fi
+#TEST_LAYERS=""
+#[ "$INSTALL_LAYER_1" = true ] && TEST_LAYERS="${TEST_LAYERS}1,"
+#[ "$INSTALL_LAYER_2" = true ] && TEST_LAYERS="${TEST_LAYERS}2,"
+#[ "$INSTALL_LAYER_3" = true ] && TEST_LAYERS="${TEST_LAYERS}3,"
+#[ "$INSTALL_LAYER_4" = true ] && TEST_LAYERS="${TEST_LAYERS}4,"
+#TEST_LAYERS=${TEST_LAYERS%,}  # Remove trailing comma
+#
+#if [ -n "$TEST_LAYERS" ]; then
+    #agent-discover-scanner scan --layers "$TEST_LAYERS" --output test_scan_report.md || true
+   # 
+    #if [ -f "test_scan_report.md" ]; then
+        #log_success "Test scan completed: test_scan_report.md"
+    #fi
+#else
+    #log_warning "No layers to test"
+#fi
 
 # Step 10: Print summary
 echo ""

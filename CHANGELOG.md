@@ -7,6 +7,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.0.0] - 2026-02-13
+
+### Added
+- **Layer 4: Endpoint Discovery** - Discover Shadow AI on developer laptops and workstations
+  - New `layer4` CLI command for endpoint scanning
+  - Detects desktop AI applications (ChatGPT, Claude, Cursor, GitHub Copilot)
+  - Finds AI packages (pip, npm: openai, langchain, anthropic, etc.)
+  - Monitors active connections to AI services
+  - Tracks browser-based AI usage (chatgpt.com, claude.ai)
+  - Risk scoring for endpoints (0-100 based on Shadow AI severity)
+  - osquery-based implementation (Apache 2.0 license)
+
+### Features
+- New modules: `layer4/`, `models/`, `reports/`
+- Comprehensive Layer 4 reporting (markdown and JSON formats)
+- Graceful degradation when osquery not installed
+- Platform detection (macOS, Linux, Windows)
+- Integration with existing scanner architecture
+
+### Documentation
+- New: Layer 4 setup guide (`docs/layer4-setup.md`)
+- New: Universal installer (`install.sh`)
+- Updated: README with Layer 4 information
+
+## [1.1.1] - 2026-01-25
+...existing changelog content...
 ## [1.0.0-rc1] - 2025-12-20
 
 ### Added

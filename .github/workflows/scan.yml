@@ -1,0 +1,37 @@
+name: AI Discovery Scan
+
+on:
+  schedule:
+    - cron: '0 2 * * *'  # Daily at 2 AM
+  workflow_dispatch:
+
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v3
+      
+      - name: Install AgentDiscover Scanner
+        run: |
+          curl -fsSL https://raw.githubusercontent.com/Defend-AI-Tech-Inc/agent-discover-scanner/main/install.sh | bash -s -- --non-interactive --layers 1,4
+      
+      - name: Run Scan
+        run: |
+          agent-discover-scanner scan --layers 1,4 --output scan_report.md
+      
+      - name: Upload Report
+        uses: actions/upload-artifact@v3
+        with:
+          name: scan-report
+          path: scan_report.md
+      
+
+      - name: Check for High-Risk Findings
+        run: |
+          if grep -q "Risk Score: [789][0-9]/100" scan_report.md; then
+            echo "::warning::High-risk AI usage detected (Risk Score 70+)"
+            echo "Review scan_report.md for details"
+          fi
+          # Don't fail the build - just warn

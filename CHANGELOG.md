@@ -94,3 +94,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 - Installation instructions now work correctly via PyPI
+
+## [2.0.2] - 2026-02-15
+
+### Fixed
+- install.sh: Fix all remaining hardcoded sudo commands
+- install.sh: Properly handle Docker/root environments
+- install.sh: Use $SUDO variable consistently throughout
+

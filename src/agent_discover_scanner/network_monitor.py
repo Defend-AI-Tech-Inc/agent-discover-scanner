@@ -59,19 +59,23 @@ class NetworkMonitor:
         'perplexity.ai': 'Perplexity',
         
         # Development tools
-        'github.com/features/copilot': 'GitHub Copilot',
+        'github.com': 'GitHub Copilot',  # Note: matches all GitHub connections, not just Copilot
+        'api.github.com': 'GitHub Copilot',  # GitHub API (used by Copilot)
         'api.cursor.sh': 'Cursor',
         'codeium.com': 'Codeium',
     }
         
-    # ADD: Vector database domains
+    # Vector database domains (includes both old and new domains for compatibility)
     VECTOR_DBS = {
         'pinecone.io': 'Pinecone',
         'api.pinecone.io': 'Pinecone',
         'weaviate.io': 'Weaviate',
+        'weaviate.cloud': 'Weaviate',  # Hosted/cloud version
         'qdrant.io': 'Qdrant',
+        'qdrant.tech': 'Qdrant',  # Legacy domain
         'milvus.io': 'Milvus',
         'chromadb.io': 'ChromaDB',
+        'chroma.io': 'ChromaDB',  # Legacy domain
     }
     
     def detect_rag_patterns(self, connections: List[AIConnection]) -> List[Dict]:

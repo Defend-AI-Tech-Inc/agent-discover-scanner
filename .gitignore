@@ -62,3 +62,8 @@ Thumbs.db
 
 # Allow example JSON files
 !examples/**/*.json
+.pypirc
+demo_*.txt
+demo_*.md
+*_report.md
+*.jsonl

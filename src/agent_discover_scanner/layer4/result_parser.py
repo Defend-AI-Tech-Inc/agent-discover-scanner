@@ -48,6 +48,7 @@ class OsqueryResultParser:
     def parse_connections(raw_results: List[Dict]) -> List[EndpointAIConnection]:
         """Parse active network connections from osquery"""
         connections = []
+        parser = OsqueryResultParser()
         
         for row in raw_results:
             connections.append(EndpointAIConnection(
@@ -55,7 +56,7 @@ class OsqueryResultParser:
                 process_id=int(row.get("pid", 0)),
                 remote_address=row.get("remote_address", ""),
                 remote_port=int(row.get("remote_port", 0)),
-                remote_hostname=OsqueryResultParser._resolve_hostname(row.get("remote_address", "")),
+                remote_hostname=parser._resolve_hostname(row.get("remote_address", "")),
                 connection_state=row.get("state", "UNKNOWN"),
                 bytes_sent=0,  # osquery doesn't track this easily
                 bytes_received=0,
@@ -72,7 +73,7 @@ class OsqueryResultParser:
         for row in raw_results:
             # Parse last_visit timestamp if present
             try:
-                last_visit = datetime.fromisoformat(row.get("last_visit", ""))
+                last_visit = datetime.fromisoformat(row.get("last_visit_time", ""))
             except:
                 last_visit = datetime.now()
             
@@ -105,16 +106,16 @@ class OsqueryResultParser:
         else:
             return "Unknown"
     
-    @staticmethod
-    def _resolve_hostname(ip_address: str) -> str:
-        """Try to resolve IP to hostname"""
-        # Simple pattern matching for known AI services
-        # In production, you'd do reverse DNS lookup
-        
-        if "104.18" in ip_address or "104.26" in ip_address:
-            return "api.openai.com"  # Cloudflare IPs used by OpenAI
-        elif "52." in ip_address or "54." in ip_address:
-            return "api.anthropic.com"  # AWS IPs
+    def _resolve_hostname(self, ip_address: str) -> str:
+        """Resolve IP to probable AI service hostname"""
+        # More precise IP matching
+        if ip_address.startswith("13.107.") or ip_address.startswith("52.84."):
+            return "api.openai.com"
+        elif ip_address.startswith("52.") or ip_address.startswith("54."):
+            # AWS - could be Anthropic but not certain
+            return "api.anthropic.com (AWS)"
+        elif ip_address.startswith("104.18.") or ip_address.startswith("104.26."):
+            return "claude.ai"
         else:
             return ip_address
     

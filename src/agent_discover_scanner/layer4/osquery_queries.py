@@ -85,29 +85,6 @@ class AIDiscoveryQueries:
     
     # Active Connections to AI Services
     
-    AI_CONNECTIONS = """
-    SELECT 
-        p.pid,
-        p.name as process_name,
-        p.path as process_path,
-        pos.family,
-        pos.protocol,
-        pos.local_address,
-        pos.local_port,
-        pos.remote_address,
-        pos.remote_port,
-        pos.state
-    FROM processes p
-    JOIN process_open_sockets pos ON p.pid = pos.pid
-    WHERE pos.remote_port = 443
-      AND (
-          pos.remote_address LIKE '%openai%'
-          OR pos.remote_address LIKE '%anthropic%'
-          OR pos.remote_address LIKE '%cohere%'
-          OR pos.remote_address LIKE '%together%'
-          OR pos.remote_address LIKE '%replicate%'
-      );
-    """
     
     # Browser History (Chrome - most common)
     # Chrome AI History - FIXED
@@ -199,9 +176,9 @@ class AIDiscoveryQueries:
         queries = {
             "python_packages": AIDiscoveryQueries.PYTHON_AI_PACKAGES,
             "npm_packages": AIDiscoveryQueries.NPM_AI_PACKAGES,
-            "ai_connections": AIDiscoveryQueries.AI_CONNECTIONS,
-	    #"safari_history": AIDiscoveryQueries.SAFARI_AI_HISTORY,
-	    #"edge_history": AIDiscoveryQueries.EDGE_AI_HISTORY,
+            #"ai_connections": AIDiscoveryQueries.AI_CONNECTIONS,
+	        #"safari_history": AIDiscoveryQueries.SAFARI_AI_HISTORY,
+	        #"edge_history": AIDiscoveryQueries.EDGE_AI_HISTORY,
         }
         
         # Platform-specific queries

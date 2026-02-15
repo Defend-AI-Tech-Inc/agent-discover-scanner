@@ -26,7 +26,7 @@ NC='\033[0m' # No Color
 INTERACTIVE=true
 INSTALL_LAYERS="1,4"  # Default: Code + Endpoint (no K8s required)
 INSTALL_FROM_SOURCE=false
-PYTHON_MIN_VERSION="3.8"
+PYTHON_MIN_VERSION="3.10"
 
 # Parse command line arguments
 while [[ $# -gt 0 ]]; do

@@ -31,6 +31,8 @@ AgentDiscover Scanner detects autonomous AI agents and Shadow AI in your codebas
 
 ## ✨ Features
 
+**Latest:** v2.0.2 - Four-layer detection now available! 🎉
+
 ### Multi-Language Support
 ```bash
 # Scans both Python and JavaScript/TypeScript
@@ -55,7 +57,19 @@ agent-discover-scanner scan ./my-project
 
 ## 🚀 Quick Start
 
-### Installation
+### One-Command Installation (Recommended)
+```bash
+curl -fsSL https://raw.githubusercontent.com/Defend-AI-Tech-Inc/agent-discover-scanner/main/install.sh | bash
+```
+
+This installer:
+- Auto-detects your environment (macOS/Linux/Windows)
+- Installs all dependencies (Python, osquery, psutil)
+- Handles sudo/root automatically
+- Works in Docker containers
+- Sets up all four detection layers
+
+### Manual Installation
 ```bash
 # Option 1: Using uv (recommended)
 uv tool install agent-discover-scanner
@@ -83,6 +97,7 @@ agent-discover-scanner deps /path/to/repo
 
 # Monitor local network for active agents (30 seconds)
 agent-discover-scanner monitor --duration 30
+```
 
 ### Kubernetes Monitoring (v1.1.0+) 🆕
 
@@ -120,7 +135,53 @@ Workload: Deployment/trading-bot
 Binary: /usr/bin/python3
 ```
 
+### Layer 4: Endpoint Discovery 🖥️ **NEW in v2.0!**
 
+Discover Shadow AI on developer laptops and workstations:
+```bash
+# Scan local endpoint for Shadow AI
+agent-discover-scanner layer4
+
+# Generate markdown report
+agent-discover-scanner layer4 --format markdown --output endpoint-report.md
+
+# JSON output for automation
+agent-discover-scanner layer4 --format json
+```
+
+**Detects:**
+- Desktop AI apps: ChatGPT, Claude Desktop, Cursor, GitHub Copilot
+- AI packages: pip/npm packages (openai, langchain, anthropic, crewai)
+- Active AI connections: Live API calls to LLM providers
+- Browser AI usage: ChatGPT, Claude, Gemini tabs
+- Risk scoring: 0-100 based on Shadow AI severity
+
+**Requires:**
+- osquery (auto-installed by install.sh)
+- Works on: macOS, Linux, Windows
+
+**Example Output:**
+```
+🖥️  ENDPOINT SCAN RESULTS
+Risk Score: 75/100 (HIGH)
+Desktop Applications:
+✓ ChatGPT Desktop (v1.2.3)
+✓ Cursor (v0.40.1)
+✓ GitHub Copilot (VS Code extension)
+Installed Packages:
+✓ openai (1.54.3) - pip
+✓ anthropic (0.39.0) - pip
+✓ langchain (0.3.11) - npm
+Active Connections:
+🚨 api.openai.com:443 (ChatGPT Desktop)
+🚨 api.anthropic.com:443 (Python process)
+Browser Activity:
+✓ chatgpt.com (3 tabs open)
+✓ claude.ai (1 tab)
+⚠️  HIGH RISK: Multiple Shadow AI tools detected
+```
+
+```bash
 # Correlate code + network findings
 agent-discover-scanner correlate \
   --code-scan results.sarif \

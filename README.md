@@ -135,21 +135,68 @@ Workload: Deployment/trading-bot
 Binary: /usr/bin/python3
 ```
 
-### Layer 4: Endpoint Discovery 🖥️ **NEW in v2.0!**
+### Endpoint Discovery 🖥️ **NEW in v2.0!**
 
-Discover Shadow AI on developer laptops and workstations:
+Discover Shadow AI on any laptops, servers and workstations:
 ```bash
 # Scan local endpoint for Shadow AI
-agent-discover-scanner layer4
+agent-discover-scanner endpoint
 
 # Generate markdown report
-agent-discover-scanner layer4 --format markdown --output endpoint-report.md
+agent-discover-scanner endpoint --format markdown --output endpoint-report.md
 
 # JSON output for automation
-agent-discover-scanner layer4 --format json
+agent-discover-scanner endpoint --format json
 ```
 
+**Supported Platforms:**
+- 💻 macOS (10.15+)
+- 🐧 Linux (Ubuntu, Debian, RHEL, Fedora)
+- 🪟 Windows (10, 11, Server 2019+)
+
+**Deployment Scenarios:**
+- Employee laptops (company-issued)
+- Developer workstations
+- Contractor machines (desktop/laptop)
+- Remote worker endpoints
+- Jump boxes and bastion hosts
+- CI/CD runners
+- Virtual Desktop Infrastructure (VDI)
+
+**What It Finds:**
+
+**Desktop AI Applications:**
+- ChatGPT Desktop
+- Claude Desktop
+- Cursor IDE
+- GitHub Copilot
+- Continue.dev
+- Windsurf
+- Aider
+
+**Installed AI Packages:**
+- Python: openai, anthropic, langchain, crewai, autogen
+- Node.js: @anthropic-ai/sdk, openai, langchain
+
+**Active AI Connections:**
+- Real-time API calls to OpenAI, Anthropic, Google AI
+- WebSocket connections
+- Browser-based AI usage (chatgpt.com, claude.ai)
+
+**Risk Assessment:**
+- 0-25: Low (minimal AI usage)
+- 26-50: Medium (some AI tools)
+- 51-75: High (significant Shadow AI)
+- 76-100: Critical (widespread ungoverned AI)
+
+**Requirements:**
+- osquery (auto-installed by install.sh)
+- Python 3.10+
+- Admin/sudo access for installation
+- See [Layer 4 Setup Guide](docs/layer4-setup.md)
+
 **Detects:**
+- Works on ANY laptop, workstation, or server (employee or contractor)
 - Desktop AI apps: ChatGPT, Claude Desktop, Cursor, GitHub Copilot
 - AI packages: pip/npm packages (openai, langchain, anthropic, crewai)
 - Active AI connections: Live API calls to LLM providers

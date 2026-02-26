@@ -1,4 +1,8 @@
 import ast
+import json
+import shutil
+import subprocess
+from importlib.metadata import version as _pkg_version
 from pathlib import Path
 from typing import Optional
 
@@ -29,8 +33,35 @@ from agent_discover_scanner.layer4.result_parser import OsqueryResultParser
 from agent_discover_scanner.reports.layer4_report import Layer4Report
 import socket
 
+__version__ = _pkg_version("agent-discover-scanner")
+
 app = typer.Typer(help="AgentDiscover Scanner: Detect Autonomous AI Agents and Shadow AI")
 console = Console()
+
+
+def version_callback(value: Optional[bool]) -> None:
+    """
+    Global --version / -v option callback.
+    """
+    if not value:
+        return
+    console.print(f"AgentDiscover Scanner v{__version__}")
+    raise typer.Exit()
+
+
+@app.callback()
+def main(
+    version: Optional[bool] = typer.Option(
+        None,
+        "--version",
+        "-v",
+        is_eager=True,
+        help="Show version and exit",
+        callback=version_callback,
+    ),
+) -> None:
+    # Main app callback (no-op; used only for global options like --version)
+    return
 
 
 @app.command()
@@ -457,6 +488,278 @@ def correlate(
             console.print(f"    Last Seen: {ghost.last_seen}\n")
 
     console.print(f"\n[green]✓ Inventory saved to: {output}[/green]")
+
+
+@app.command("scan-all")
+def scan_all(
+    path: str = typer.Argument(..., help="Directory to scan"),
+    duration: int = typer.Option(60, "--duration", "-d", help="Network/K8s monitor duration in seconds"),
+    output: Path = typer.Option(
+        Path("defendai-results"),
+        "--output",
+        "-o",
+        help="Output directory for all results",
+    ),
+    format: str = typer.Option(
+        "text",
+        "--format",
+        "-f",
+        help="Output format for final summary: text|json|sarif",
+    ),
+    layer3_file: Optional[Path] = typer.Option(
+        None,
+        "--layer3-file",
+        help="Optional path to existing Tetragon JSONL output (skip live monitor-k8s if provided)",
+    ),
+    skip_layers: Optional[str] = typer.Option(
+        None,
+        "--skip-layers",
+        help="Comma-separated layers to skip, e.g. '3' or '2,3'",
+    ),
+):
+    """
+    Run a full 4-layer AI agent scan and correlate all findings.
+    """
+    from agent_discover_scanner.correlator import CorrelationEngine
+    from agent_discover_scanner.network_monitor import NetworkMonitor
+    from agent_discover_scanner.monitors import monitor_k8s as run_monitor_k8s
+
+    console.print("\n[bold cyan]Running full 4-layer AI agent scan...[/bold cyan]\n")
+
+    # Validate target path
+    try:
+        scan_root = validate_directory_exists(path, "Scan directory")
+    except ValidationError:
+        raise typer.Exit(code=1)
+
+    output_dir = output
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    # Parse skip-layers
+    skip_set = set()
+    if skip_layers:
+        for part in skip_layers.split(","):
+            key = part.strip().lower()
+            if not key:
+                continue
+            if key.startswith("layer"):
+                key = key[5:]
+            skip_set.add(key)
+
+    def is_skipped(layer_num: int) -> bool:
+        return str(layer_num) in skip_set
+
+    # Output files
+    layer1_sarif = output_dir / "layer1_code.sarif"
+    layer2_json = output_dir / "layer2_network.json"
+    layer3_jsonl = layer3_file or (output_dir / "layer3_k8s.jsonl")
+    layer4_json = output_dir / "layer4_endpoint.json"
+    inventory_path = output_dir / "agent_inventory.json"
+
+    code_findings = []
+    network_findings = []
+    layer3_findings = []
+    layer4_findings = []
+
+    # Layer 1: Code discovery
+    if is_skipped(1):
+        console.print("[yellow]Skipping Layer 1 (code discovery) per configuration[/yellow]")
+    else:
+        console.print("[bold green]Layer 1: Code discovery (static code scan)[/bold green]")
+        try:
+            # Reuse existing scan command to generate SARIF
+            scan(path=str(scan_root), output=str(layer1_sarif), format="sarif", verbose=False)
+            from agent_discover_scanner.correlator import CorrelationEngine as _CE
+
+            code_findings = _CE.load_code_findings(layer1_sarif)
+            console.print(f"[cyan]Layer 1 findings loaded: {len(code_findings)}[/cyan]\n")
+        except Exception as e:
+            console.print(f"[red]Layer 1 scan failed:[/red] {e}")
+            code_findings = []
+
+    # Layer 2: Network discovery
+    if is_skipped(2):
+        console.print("[yellow]Skipping Layer 2 (network discovery) per configuration[/yellow]")
+    else:
+        console.print("[bold green]Layer 2: Network discovery (runtime connections)[/bold green]")
+        try:
+            net_monitor = NetworkMonitor()
+            summary = net_monitor.monitor(duration_seconds=duration)
+            layer2_json.write_text(json.dumps(summary, indent=2))
+
+            # Build findings list for correlation
+            providers = getattr(CorrelationEngine, "_PROVIDERS", set())
+            nf = []
+            for conn in summary.get("connections", []):
+                service = (conn.get("service") or "").lower()
+                host = (conn.get("remote_host") or "").lower()
+                provider = None
+                for slug in providers:
+                    if slug in service or slug in host:
+                        provider = slug
+                        break
+                if not provider:
+                    continue
+                nf.append(
+                    {
+                        "provider": provider,
+                        "process_name": conn.get("process"),
+                        "timestamp": conn.get("timestamp"),
+                    }
+                )
+            network_findings = nf
+            console.print(
+                f"[cyan]Layer 2 connections contributing to correlation: {len(network_findings)}[/cyan]\n"
+            )
+        except ImportError:
+            console.print("[red]psutil not installed; skipping Layer 2 network discovery[/red]")
+        except Exception as e:
+            console.print(f"[red]Layer 2 monitoring failed:[/red] {e}")
+
+    # Layer 3: Kubernetes / runtime discovery via Tetragon
+    if is_skipped(3):
+        console.print("[yellow]Skipping Layer 3 (Kubernetes discovery) per configuration[/yellow]")
+    else:
+        console.print("[bold green]Layer 3: Kubernetes runtime discovery (Tetragon)[/bold green]")
+        if layer3_file:
+            try:
+                validated = validate_file_exists(str(layer3_file), "Layer 3 findings file")
+                layer3_findings = CorrelationEngine.load_layer3_findings(validated)
+                console.print(
+                    f"[cyan]Loaded existing Layer 3 findings from {validated}[/cyan]\n"
+                )
+            except ValidationError:
+                console.print("[red]Provided --layer3-file not found; skipping Layer 3[/red]")
+            except Exception as e:
+                console.print(f"[red]Failed to load Layer 3 findings:[/red] {e}")
+        else:
+            # Only run if kubectl is available
+            if shutil.which("kubectl") is None:
+                console.print(
+                    "[yellow]kubectl not found; skipping live Layer 3 Kubernetes monitoring[/yellow]"
+                )
+            else:
+                try:
+                    run_monitor_k8s(
+                        namespace="kube-system",
+                        duration=duration,
+                        output_file=layer3_jsonl,
+                        output_format="jsonl",
+                    )
+                    layer3_findings = CorrelationEngine.load_layer3_findings(layer3_jsonl)
+                    console.print(
+                        f"[cyan]Layer 3 findings loaded: {len(layer3_findings)}[/cyan]\n"
+                    )
+                except FileNotFoundError:
+                    console.print(
+                        "[yellow]kubectl or Tetragon not available; skipping Layer 3[/yellow]"
+                    )
+                except Exception as e:
+                    console.print(f"[red]Layer 3 monitoring failed:[/red] {e}")
+
+    # Layer 4: Endpoint discovery via osquery
+    if is_skipped(4):
+        console.print("[yellow]Skipping Layer 4 (endpoint discovery) per configuration[/yellow]")
+    else:
+        console.print("[bold green]Layer 4: Endpoint discovery (osquery)[/bold green]")
+        try:
+            subprocess.run(
+                ["osqueryi", "--version"],
+                capture_output=True,
+                timeout=5,
+                check=True,
+            )
+        except (subprocess.CalledProcessError, FileNotFoundError):
+            console.print(
+                "[yellow]osquery not installed or not available; skipping Layer 4[/yellow]"
+            )
+        else:
+            try:
+                from agent_discover_scanner.layer4.osquery_executor import OsqueryExecutor
+
+                executor = OsqueryExecutor()
+                raw_results = executor.discover_all()
+
+                # Flatten all rows into a single list for correlation
+                flat_rows = []
+                for rows in raw_results.values():
+                    if isinstance(rows, list):
+                        flat_rows.extend(rows)
+
+                layer4_json.write_text(json.dumps({"data": flat_rows}, indent=2))
+                layer4_findings = CorrelationEngine.load_layer4_findings(layer4_json)
+                console.print(
+                    f"[cyan]Layer 4 endpoint findings contributing to correlation: {len(layer4_findings)}[/cyan]\n"
+                )
+            except Exception as e:
+                console.print(f"[red]Layer 4 endpoint scan failed:[/red] {e}")
+
+    # Correlation
+    console.print("[bold cyan]Running correlation across all available layers...[/bold cyan]\n")
+    inventory = CorrelationEngine.correlate(
+        code_findings=code_findings,
+        network_findings=network_findings,
+        layer4_findings=layer4_findings,
+        layer3_findings=layer3_findings,
+    )
+    report = CorrelationEngine.generate_report(inventory, inventory_path)
+
+    # Final summary table
+    console.print("\n[bold cyan]Correlation Summary[/bold cyan]\n")
+
+    summary_table = Table(show_header=True, header_style="bold magenta")
+    summary_table.add_column("Classification", style="cyan")
+    summary_table.add_column("Count", style="green")
+    summary_table.add_column("Description", style="dim")
+
+    summary_table.add_row(
+        "CONFIRMED",
+        str(report["summary"]["confirmed"]),
+        "Code + runtime evidence (one or more layers)",
+    )
+    summary_table.add_row(
+        "UNKNOWN",
+        str(report["summary"]["unknown"]),
+        "Code only (no runtime evidence yet)",
+    )
+    summary_table.add_row(
+        "ZOMBIE",
+        str(report["summary"].get("zombie", 0)),
+        "Code but no recent activity (potentially deprecated)",
+    )
+    summary_table.add_row(
+        "GHOST",
+        f"[red]{report['summary']['ghost']}[/red]",
+        "[red]Runtime activity with no corresponding code (GHOST)[/red]",
+    )
+
+    console.print(summary_table)
+
+    # Risk breakdown
+    console.print("\n[bold]Risk Breakdown:[/bold]")
+    rb = report["risk_breakdown"]
+    console.print(f"  [red]●[/red] Critical: {rb.get('critical', 0)}")
+    console.print(f"  [yellow]●[/yellow] High: {rb.get('high', 0)}")
+    console.print(f"  [blue]●[/blue] Medium: {rb.get('medium', 0)}")
+    console.print(f"  [green]●[/green] Low: {rb.get('low', 0)}")
+
+    # Detection coverage by layer combination
+    coverage = report["summary"].get("detection_coverage", {})
+    if coverage:
+        console.print("\n[bold]Detection Coverage by Layer Combination:[/bold]")
+        cov_table = Table(show_header=True, header_style="bold magenta")
+        cov_table.add_column("Layers", style="cyan")
+        cov_table.add_column("Agents", style="green")
+
+        for layers, count in sorted(coverage.items(), key=lambda x: (-x[1], x[0])):
+            cov_table.add_row(layers or "none", str(count))
+
+        console.print(cov_table)
+
+    console.print(f"\n[green]✓ Agent inventory saved to: {inventory_path}[/green]\n")
+
+    if format == "json":
+        console.print(json.dumps(report, indent=2))
 
 
 @app.command()

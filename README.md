@@ -20,14 +20,14 @@
 
 AgentDiscover Scanner detects autonomous AI agents and Shadow AI in your codebase through:
 
-- 🔍 **Static Code Analysis** - AST-based detection across Python & JavaScript
-- ⚙️ **eBPF Runtime Detection** - Real-time Kubernetes monitoring via Cilium Tetragon
-- 🚨 **Shadow AI Detection** - Unmanaged LLM clients bypassing governance
-- 🤖 **Framework Detection** - AutoGen, CrewAI, LangChain, LangGraph support
-- 📦 **Dependency Scanning** - Analyze requirements.txt & package.json
-- 🌐 **Network Monitoring** - Detect active agents by their API traffic (local + Kubernetes)
-- 🔗 **Correlation Engine** - Match code findings with runtime behavior
-- 📊 **SARIF Output** - CI/CD integration ready
+- 🔍 Layer 1: Static Code Analysis — AST-based detection across Python & JavaScript
+- 🌐 Layer 2: Network Monitoring — Detect active agents by their LLM API traffic (local + Kubernetes)
+- ⚙️ Layer 3: eBPF Runtime Detection — Kernel-level visibility via Tetragon (works with any CNI)
+- 🔗 Layer 4: Endpoint Discovery — Process and connection enumeration via osquery
+- 🚨 Shadow AI Detection — Unmanaged LLM clients bypassing governance
+- 🤖 Framework Detection — AutoGen, CrewAI, LangChain, LangGraph support
+- 📦 Dependency Scanning — Analyze requirements.txt & package.json
+- 📊 SARIF Output — CI/CD integration ready
 
 ## ✨ Features
 
@@ -101,7 +101,7 @@ agent-discover-scanner monitor --duration 30
 
 ### Kubernetes Monitoring (v1.1.0+) 🆕
 
-Monitor production Kubernetes clusters in real-time using Cilium Tetragon eBPF:
+Monitor production Kubernetes clusters in real-time using Tetragon eBPF:
 ```bash
 # Monitor cluster for AI agent activity
 agent-discover-scanner monitor-k8s
@@ -123,8 +123,9 @@ agent-discover-scanner monitor-k8s --namespace monitoring
 - Full pod/container/workload attribution
 
 **Requires:**
-- Cilium Tetragon installed in cluster
+- Helm 3+
 - kubectl configured and authenticated
+- No specific CNI required — works with Flannel, Calico, Weave, AWS VPC CNI, Azure CNI, GKE CNI, and others
 - See [Tetragon Setup Guide](docs/TETRAGON_SETUP.md)
 
 **Example Detection:**

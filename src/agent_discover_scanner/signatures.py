@@ -356,16 +356,6 @@ class DirectHttpLlmClientSignature(Signature):
     }
 
     def check(self, node: ast.Call, visitor: ContextAwareVisitor) -> Optional[Finding]:
-        # Temporary debug to verify llm_api_strings_present for this file/signature
-        print(
-            f"DEBUG: {visitor.filename} llm_api_strings_present="
-            f"{getattr(visitor, 'llm_api_strings_present', None)}"
-        )
-
-        # Only trigger in files that also contain LLM API URL strings
-        if not getattr(visitor, "llm_api_strings_present", False):
-            return None
-
         func_name = self._get_function_name(node, visitor)
         if not func_name:
             return None
@@ -379,7 +369,7 @@ class DirectHttpLlmClientSignature(Signature):
             col_offset=node.col_offset,
             rule_id=self.RULE_ID,
             message="Direct HTTP LLM client detected (Shadow AI) — bypasses SDK governance layer",
-            severity="error",
+            severity="warning",
         )
 
     def _get_function_name(self, node: ast.Call, visitor: ContextAwareVisitor) -> Optional[str]:

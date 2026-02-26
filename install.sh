@@ -25,6 +25,7 @@ NC='\033[0m' # No Color
 # Configuration
 INTERACTIVE=true
 INSTALL_LAYERS="1,4"  # Default: Code + Endpoint (no K8s required)
+LAYERS_EXPLICITLY_SET=false  # True if user passed --layers
 INSTALL_FROM_SOURCE=false
 PYTHON_MIN_VERSION="3.10"
 
@@ -37,6 +38,7 @@ while [[ $# -gt 0 ]]; do
             ;;
         --layers|-l)
             INSTALL_LAYERS="$2"
+            LAYERS_EXPLICITLY_SET=true
             shift 2
             ;;
         --source|-s)
@@ -94,7 +96,9 @@ detect_python() {
         if command -v "$cmd" &> /dev/null; then
             PYTHON_CMD="$cmd"
             # Use sed instead of grep -oP for better compatibility
-            PYTHON_VERSION=$($cmd --version 2>&1 | sed -E 's/.*([0-9]+\.[0-9]+).*/\1/' | head -1)
+            #PYTHON_VERSION=$($cmd --version 2>&1 | sed -E 's/.*([0-9]+\.[0-9]+).*/\1/' | head -1)
+            PYTHON_VERSION=$($cmd --version 2>&1 | grep -oE '[0-9]+\.[0-9]+(\.[0-9]+)?' | head -1 | cut -d. -f1,2)
+
             return 0
         fi
     done
@@ -156,6 +160,11 @@ if command_exists kubectl; then
     fi
 else
     log_info "Kubernetes not available (kubectl not found)"
+fi
+
+# When Kubernetes is detected and user did not explicitly set --layers, include Layers 2 and 3
+if [ "$K8S_AVAILABLE" = true ] && [ "$LAYERS_EXPLICITLY_SET" = false ]; then
+    INSTALL_LAYERS="1,2,3,4"
 fi
 
 # Step 3: Check Python version
@@ -239,7 +248,15 @@ if [ "$INSTALL_FROM_SOURCE" = true ]; then
     fi
 else
     log_info "Installing from PyPI..."
-    $PYTHON_CMD -m pip install --upgrade agent-discover-scanner
+    #$PYTHON_CMD -m pip install --upgrade agent-discover-scanner
+    if command_exists pipx; then
+        pipx install agent-discover-scanner
+    elif $PYTHON_CMD -m pip install --upgrade agent-discover-scanner 2>/dev/null; then
+        true
+    else
+        # Externally managed environment (Debian/Ubuntu 23.04+)
+        $PYTHON_CMD -m pip install --upgrade agent-discover-scanner --break-system-packages
+    fi
 fi
 
 # Verify installation

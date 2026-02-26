@@ -22,6 +22,10 @@ class Signature(ABC):
         """
         pass
 
+    # Optional hook for signatures that operate on string literals / constants
+    def check_constant(self, node: ast.Constant, visitor: ContextAwareVisitor) -> Optional[Finding]:  # type: ignore[override]
+        return None
+
 
 class AutoGenSignature(Signature):
     """
@@ -328,10 +332,116 @@ class ShadowAISignature(Signature):
         return False
 
 
+class DirectHttpLlmClientSignature(Signature):
+    """
+    Detect direct HTTP clients used for LLM access in the same file as known LLM API URLs.
+
+    Targets:
+      - httpx.AsyncClient
+      - httpx.Client
+      - aiohttp.ClientSession
+      - requests.Session
+      - requests.post / requests.get
+    """
+
+    RULE_ID = "DAI005"
+
+    HTTP_CLIENT_TARGETS = {
+        "httpx.AsyncClient",
+        "httpx.Client",
+        "aiohttp.ClientSession",
+        "requests.Session",
+        "requests.post",
+        "requests.get",
+    }
+
+    def check(self, node: ast.Call, visitor: ContextAwareVisitor) -> Optional[Finding]:
+        # Only trigger in files that also contain LLM API URL strings
+        if not getattr(visitor, "llm_api_strings_present", False):
+            return None
+
+        func_name = self._get_function_name(node, visitor)
+        if not func_name:
+            return None
+
+        if func_name not in self.HTTP_CLIENT_TARGETS:
+            return None
+
+        return Finding(
+            file_path=visitor.filename,
+            lineno=node.lineno,
+            col_offset=node.col_offset,
+            rule_id=self.RULE_ID,
+            message="Direct HTTP LLM client detected (Shadow AI) — bypasses SDK governance layer",
+            severity="error",
+        )
+
+    def _get_function_name(self, node: ast.Call, visitor: ContextAwareVisitor) -> Optional[str]:
+        if isinstance(node.func, ast.Name):
+            return visitor.resolve_name(node.func.id)
+        elif isinstance(node.func, ast.Attribute):
+            if isinstance(node.func.value, ast.Name):
+                base = visitor.resolve_name(node.func.value.id)
+                return f"{base}.{node.func.attr}"
+        return None
+
+
+class LlmApiStringSignature(Signature):
+    """
+    Detect known LLM API endpoint hostnames in string literals.
+
+    This runs on all ast.Constant string nodes.
+    """
+
+    RULE_ID = "DAI006"
+
+    LLM_API_HOSTNAMES = (
+        "api.openai.com",
+        "api.anthropic.com",
+        "api.groq.com",
+        "api.deepseek.com",
+        "api.perplexity.ai",
+        "generativelanguage.googleapis.com",
+        "api.cohere.com",
+        "api.mistral.ai",
+        "api.together.xyz",
+        "api.huggingface.co",
+    )
+
+    def check(self, node: ast.Call, visitor: ContextAwareVisitor) -> Optional[Finding]:
+        # This signature operates on constants via check_constant
+        return None
+
+    def check_constant(self, node: ast.Constant, visitor: ContextAwareVisitor) -> Optional[Finding]:  # type: ignore[override]
+        value = getattr(node, "value", None)
+        if not isinstance(value, str):
+            return None
+
+        matched_hosts = [host for host in self.LLM_API_HOSTNAMES if host in value]
+        if not matched_hosts:
+            return None
+
+        # Mark on the visitor that this file contains LLM API strings
+        setattr(visitor, "llm_api_strings_present", True)
+        if hasattr(visitor, "llm_api_hosts"):
+            visitor.llm_api_hosts.update(matched_hosts)  # type: ignore[attr-defined]
+
+        return Finding(
+            file_path=visitor.filename,
+            lineno=node.lineno,
+            col_offset=node.col_offset,
+            rule_id=self.RULE_ID,
+            message="LLM API endpoint string detected — direct HTTP access without SDK governance",
+            severity="warning",
+        )
+
+
 # Global signature registry
 SIGNATURE_REGISTRY: list[Signature] = [
     AutoGenSignature(),
     CrewAISignature(),
     LangChainSignature(),
     ShadowAISignature(),
+    DirectHttpLlmClientSignature(),
+    LlmApiStringSignature(),
 ]

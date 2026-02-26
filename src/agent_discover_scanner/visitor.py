@@ -37,8 +37,44 @@ class ContextAwareVisitor(ast.NodeVisitor):
         # Track all imports for analysis
         self.imports: list[str] = []
 
+        # Track presence of known LLM API endpoint strings in this file
+        self.llm_api_strings_present: bool = False
+        self.llm_api_hosts: set[str] = set()
+
         # Signature registry for detection
         self.signature_registry = signature_registry or []
+
+    def visit(self, node: ast.AST):
+        """
+        Run a pre-pass to process imports and all string constants first,
+        so llm_api_strings_present is set before any visit_Call runs (DAI005).
+        """
+        self._prepass_imports_and_constants(node)
+        super().visit(node)
+
+    def _prepass_imports_and_constants(self, tree: ast.AST) -> None:
+        """Walk tree once to build import map and run constant checks (e.g. DAI006)."""
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                for alias in node.names:
+                    real_name = alias.name
+                    alias_name = alias.asname or alias.name
+                    self.import_map[alias_name] = real_name
+                    self.imports.append(real_name)
+            elif isinstance(node, ast.ImportFrom):
+                module = node.module or ""
+                for alias in node.names:
+                    full_name = f"{module}.{alias.name}" if module else alias.name
+                    alias_name = alias.asname or alias.name
+                    self.import_map[alias_name] = full_name
+                    self.imports.append(full_name)
+            elif isinstance(node, ast.Constant) and isinstance(node.value, str):
+                for signature in self.signature_registry:
+                    check_constant = getattr(signature, "check_constant", None)
+                    if callable(check_constant):
+                        finding = check_constant(node, self)  # type: ignore[misc]
+                        if finding:
+                            self.findings.append(finding)
 
     def visit_Import(self, node: ast.Import):
         """
@@ -81,6 +117,13 @@ class ContextAwareVisitor(ast.NodeVisitor):
             if finding:
                 self.findings.append(finding)
 
+        self.generic_visit(node)
+
+    def visit_Constant(self, node: ast.Constant):
+        """
+        Constants are handled in _prepass_imports_and_constants so that
+        llm_api_strings_present is set before visit_Call runs (DAI005).
+        """
         self.generic_visit(node)
 
     def resolve_name(self, node_id: str) -> str:

@@ -367,10 +367,10 @@ if [ "$INSTALL_LAYER_4" = true ]; then
     fi
 fi
 
-# Step 7: Install Layers 2-3 dependencies (Cilium/Tetragon)
+# Step 7: Install Layers 2-3 dependencies (Tetragon standalone; no Cilium CNI)
 if [ "$INSTALL_LAYER_2" = true ] || [ "$INSTALL_LAYER_3" = true ]; then
     echo ""
-    log_info "Installing Layers 2-3 dependencies (Cilium/Tetragon)..."
+    log_info "Installing Layers 2-3 dependencies (Tetragon)..."
     
     if [ "$K8S_AVAILABLE" = false ]; then
         log_error "Layers 2-3 require Kubernetes, but no cluster detected"
@@ -378,38 +378,8 @@ if [ "$INSTALL_LAYER_2" = true ] || [ "$INSTALL_LAYER_3" = true ]; then
         exit 1
     fi
     
-    # Check if Cilium is already installed
-    if kubectl get pods -n kube-system -l k8s-app=cilium >/dev/null 2>&1; then
-        log_success "Cilium already installed"
-    else
-        log_info "Installing Cilium..."
-        
-        # Install Cilium CLI if not present
-        if ! command_exists cilium; then
-            log_info "Installing Cilium CLI..."
-            
-            CILIUM_CLI_VERSION=$(curl -s https://raw.githubusercontent.com/cilium/cilium-cli/main/stable.txt)
-            CLI_ARCH=amd64
-            if [ "$(uname -m)" = "aarch64" ]; then CLI_ARCH=arm64; fi
-            
-            curl -L --fail --remote-name-all https://github.com/cilium/cilium-cli/releases/download/${CILIUM_CLI_VERSION}/cilium-linux-${CLI_ARCH}.tar.gz{,.sha256sum}
-            sha256sum --check cilium-linux-${CLI_ARCH}.tar.gz.sha256sum
-            sudo tar xzvfC cilium-linux-${CLI_ARCH}.tar.gz /usr/local/bin
-            rm cilium-linux-${CLI_ARCH}.tar.gz{,.sha256sum}
-        fi
-        
-        # Install Cilium
-        cilium install
-        
-        # Wait for Cilium to be ready
-        log_info "Waiting for Cilium to be ready..."
-        cilium status --wait
-        
-        log_success "Cilium installed"
-    fi
-    
-    # Check if Tetragon is already installed
-    if kubectl get pods -n kube-system -l app.kubernetes.io/name=tetragon >/dev/null 2>&1; then
+    # Check if Tetragon is already installed (kubectl may exit 0 even when no pods exist)
+    if kubectl get pods -n kube-system -l app.kubernetes.io/name=tetragon 2>/dev/null | grep -q Running; then
         log_success "Tetragon already installed"
     else
         log_info "Installing Tetragon..."
@@ -423,10 +393,7 @@ if [ "$INSTALL_LAYER_2" = true ] || [ "$INSTALL_LAYER_3" = true ]; then
         helm repo add cilium https://helm.cilium.io
         helm repo update
         
-        helm install tetragon cilium/tetragon \
-            --namespace kube-system \
-            --set tetragon.enableProcessCred=true \
-            --set tetragon.enableProcessNs=true
+        helm install tetragon cilium/tetragon --namespace kube-system
         
         log_success "Tetragon installed"
     fi
@@ -457,10 +424,10 @@ fi
 
 # Test Layers 2-3 (K8s)
 if [ "$INSTALL_LAYER_2" = true ] || [ "$INSTALL_LAYER_3" = true ]; then
-    if kubectl get pods -n kube-system -l k8s-app=cilium | grep -q Running; then
-        log_success "✓ Cilium running (Layers 2-3 ready)"
+    if kubectl get pods -n kube-system -l app.kubernetes.io/name=tetragon 2>/dev/null | grep -q Running; then
+        log_success "✓ Tetragon running (Layers 2-3 ready)"
     else
-        log_warning "⚠ Cilium not fully ready yet"
+        log_warning "⚠ Tetragon not fully ready yet"
     fi
 fi
 

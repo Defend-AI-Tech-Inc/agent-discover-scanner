@@ -356,6 +356,12 @@ class DirectHttpLlmClientSignature(Signature):
     }
 
     def check(self, node: ast.Call, visitor: ContextAwareVisitor) -> Optional[Finding]:
+        # Temporary debug to verify llm_api_strings_present for this file/signature
+        print(
+            f"DEBUG: {visitor.filename} llm_api_strings_present="
+            f"{getattr(visitor, 'llm_api_strings_present', None)}"
+        )
+
         # Only trigger in files that also contain LLM API URL strings
         if not getattr(visitor, "llm_api_strings_present", False):
             return None

@@ -30,6 +30,7 @@ class ContextAwareVisitor(ast.NodeVisitor):
     def __init__(self, filename: str | Path, signature_registry: list | None = None):
         self.filename = str(filename)
         self.findings: list[Finding] = []
+        self._seen_finding_keys: set[tuple[str, int, int, str]] = set()
 
         # Map alias -> real_name (e.g., 'lc' -> 'langchain')
         self.import_map: dict[str, str] = {}
@@ -74,7 +75,7 @@ class ContextAwareVisitor(ast.NodeVisitor):
                     if callable(check_constant):
                         finding = check_constant(node, self)  # type: ignore[misc]
                         if finding:
-                            self.findings.append(finding)
+                            self._append_finding(finding)
 
     def visit_Import(self, node: ast.Import):
         """
@@ -115,7 +116,7 @@ class ContextAwareVisitor(ast.NodeVisitor):
         for signature in self.signature_registry:
             finding = signature.check(node, self)
             if finding:
-                self.findings.append(finding)
+                self._append_finding(finding)
 
         self.generic_visit(node)
 
@@ -157,4 +158,15 @@ class ContextAwareVisitor(ast.NodeVisitor):
             message=message,
             severity=severity,
         )
+        self._append_finding(finding)
+
+    def _append_finding(self, finding: Finding) -> None:
+        """
+        Append a finding if we haven't already recorded an identical one.
+        Keyed by (file_path, lineno, col_offset, rule_id).
+        """
+        key = (finding.file_path, finding.lineno, finding.col_offset, finding.rule_id)
+        if key in self._seen_finding_keys:
+            return
+        self._seen_finding_keys.add(key)
         self.findings.append(finding)

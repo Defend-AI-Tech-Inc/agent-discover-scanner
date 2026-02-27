@@ -83,45 +83,97 @@ class AIDiscoveryQueries:
     );
     """
     
-    # Active Connections to AI Services
-    
+    # Active Connections to AI Services via process_open_sockets
+    PROCESS_OPEN_SOCKETS = """
+    SELECT
+        p.name,
+        pos.pid,
+        pos.remote_address,
+        pos.remote_port,
+        pos.local_port
+    FROM process_open_sockets pos
+    JOIN processes p
+      ON pos.pid = p.pid
+    WHERE pos.remote_port = 443;
+    """
     
     # Browser History (Chrome - most common)
-    # Chrome AI History - FIXED
+    # Includes common AI web frontends (ChatGPT, Claude, Gemini, Perplexity, Poe, HuggingFace, etc.)
     CHROME_AI_HISTORY = """
     SELECT url, title, visit_count, last_visit_time
     FROM chrome_history
-    WHERE url LIKE '%chatgpt.com%' 
+    WHERE url LIKE '%chat.openai.com%'
+       OR url LIKE '%chatgpt.com%'
        OR url LIKE '%claude.ai%'
-       OR url LIKE '%bard.google.com%'
-       OR url LIKE '%copilot.microsoft.com%'
+       OR url LIKE '%gemini.google.com%'
        OR url LIKE '%perplexity.ai%'
+       OR url LIKE '%poe.com%'
+       OR url LIKE '%huggingface.co%'
+       OR url LIKE '%copilot.microsoft.com%'
+       OR url LIKE '%bard.google.com%'
+       OR url LIKE '%character.ai%'
+       OR url LIKE '%midjourney.com%'
+       OR url LIKE '%replicate.com%'
     ORDER BY last_visit_time DESC 
     LIMIT 100;
     """
         
-    # Safari AI History
+    # Safari AI History (macOS specific)
     SAFARI_AI_HISTORY = """
     SELECT url, title, visit_count, last_visit_time
     FROM safari_history
-    WHERE url LIKE '%chatgpt.com%' 
+    WHERE url LIKE '%chat.openai.com%'
+       OR url LIKE '%chatgpt.com%'
        OR url LIKE '%claude.ai%'
-       OR url LIKE '%bard.google.com%'
-       OR url LIKE '%copilot.microsoft.com%'
+       OR url LIKE '%gemini.google.com%'
        OR url LIKE '%perplexity.ai%'
+       OR url LIKE '%poe.com%'
+       OR url LIKE '%huggingface.co%'
+       OR url LIKE '%copilot.microsoft.com%'
+       OR url LIKE '%bard.google.com%'
+       OR url LIKE '%character.ai%'
+       OR url LIKE '%midjourney.com%'
+       OR url LIKE '%replicate.com%'
     ORDER BY last_visit_time DESC 
     LIMIT 100;
     """
     
-    # Edge AI History (Chromium-based, may work)
+    # Edge AI History (Chromium-based)
     EDGE_AI_HISTORY = """
     SELECT url, title, visit_count, last_visit_time
     FROM edge_history
-    WHERE url LIKE '%chatgpt.com%' 
+    WHERE url LIKE '%chat.openai.com%'
+       OR url LIKE '%chatgpt.com%'
        OR url LIKE '%claude.ai%'
-       OR url LIKE '%bard.google.com%'
-       OR url LIKE '%copilot.microsoft.com%'
+       OR url LIKE '%gemini.google.com%'
        OR url LIKE '%perplexity.ai%'
+       OR url LIKE '%poe.com%'
+       OR url LIKE '%huggingface.co%'
+       OR url LIKE '%copilot.microsoft.com%'
+       OR url LIKE '%bard.google.com%'
+       OR url LIKE '%character.ai%'
+       OR url LIKE '%midjourney.com%'
+       OR url LIKE '%replicate.com%'
+    ORDER BY last_visit_time DESC 
+    LIMIT 100;
+    """
+    
+    # Firefox AI History (via moz_places/Firefox history virtual table)
+    FIREFOX_AI_HISTORY = """
+    SELECT url, title, visit_count, last_visit_time
+    FROM firefox_history
+    WHERE url LIKE '%chat.openai.com%'
+       OR url LIKE '%chatgpt.com%'
+       OR url LIKE '%claude.ai%'
+       OR url LIKE '%gemini.google.com%'
+       OR url LIKE '%perplexity.ai%'
+       OR url LIKE '%poe.com%'
+       OR url LIKE '%huggingface.co%'
+       OR url LIKE '%copilot.microsoft.com%'
+       OR url LIKE '%bard.google.com%'
+       OR url LIKE '%character.ai%'
+       OR url LIKE '%midjourney.com%'
+       OR url LIKE '%replicate.com%'
     ORDER BY last_visit_time DESC 
     LIMIT 100;
     """
@@ -176,22 +228,26 @@ class AIDiscoveryQueries:
         queries = {
             "python_packages": AIDiscoveryQueries.PYTHON_AI_PACKAGES,
             "npm_packages": AIDiscoveryQueries.NPM_AI_PACKAGES,
-            #"ai_connections": AIDiscoveryQueries.AI_CONNECTIONS,
-	        #"safari_history": AIDiscoveryQueries.SAFARI_AI_HISTORY,
-	        #"edge_history": AIDiscoveryQueries.EDGE_AI_HISTORY,
+            "process_open_sockets": AIDiscoveryQueries.PROCESS_OPEN_SOCKETS,
         }
         
         # Platform-specific queries
         if platform == "darwin":
             queries["desktop_apps"] = AIDiscoveryQueries.MACOS_AI_APPS
             queries["chrome_history"] = AIDiscoveryQueries.CHROME_AI_HISTORY
+            queries["safari_history"] = AIDiscoveryQueries.SAFARI_AI_HISTORY
+            queries["edge_history"] = AIDiscoveryQueries.EDGE_AI_HISTORY
+            queries["firefox_history"] = AIDiscoveryQueries.FIREFOX_AI_HISTORY
             queries["vscode_extensions"] = AIDiscoveryQueries.VSCODE_AI_EXTENSIONS
         elif platform == "windows":
             queries["desktop_apps"] = AIDiscoveryQueries.WINDOWS_AI_APPS
-            # Chrome history query works on Windows too
             queries["chrome_history"] = AIDiscoveryQueries.CHROME_AI_HISTORY
+            queries["edge_history"] = AIDiscoveryQueries.EDGE_AI_HISTORY
+            queries["firefox_history"] = AIDiscoveryQueries.FIREFOX_AI_HISTORY
         else:  # linux
             queries["python_packages"] = AIDiscoveryQueries.PYTHON_AI_PACKAGES
             queries["npm_packages"] = AIDiscoveryQueries.NPM_AI_PACKAGES
+            queries["chrome_history"] = AIDiscoveryQueries.CHROME_AI_HISTORY
+            queries["firefox_history"] = AIDiscoveryQueries.FIREFOX_AI_HISTORY
         
         return queries

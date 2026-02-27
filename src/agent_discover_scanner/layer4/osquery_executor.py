@@ -56,25 +56,29 @@ class OsqueryExecutor:
                 ["osqueryi", "--json", query],
                 capture_output=True,
                 text=True,
-                timeout=30
+                timeout=30,
             )
-            
+
             if result.returncode != 0:
-                print(f"Query failed: {result.stderr}")
+                print(f"[Layer 4] Query failed: {result.stderr.strip()}")
                 return []
-            
+
             # Parse JSON output
             results = json.loads(result.stdout)
             return results
-            
+
         except subprocess.TimeoutExpired:
-            print(f"Query timed out after 30 seconds")
+            print("[Layer 4] Query timed out after 30 seconds")
             return []
         except json.JSONDecodeError:
-            print(f"Failed to parse osquery output: {result.stdout}")
+            print(f"[Layer 4] Failed to parse osquery output: {result.stdout}")
             return []
         except FileNotFoundError:
-            print("osqueryi not found. Is osquery installed?")
+            print("[Layer 4] osqueryi not found. Is osquery installed?")
+            return []
+        except Exception as e:
+            # Catch-all: never let a single query abort discovery
+            print(f"[Layer 4] Unexpected osquery error: {e}")
             return []
     
     def discover_all(self) -> Dict[str, List[Dict]]:
@@ -84,13 +88,18 @@ class OsqueryExecutor:
         Returns:
             Dict of {query_name: results}
         """
-        all_results = {}
-        
+        all_results: Dict[str, List[Dict]] = {}
+
         for query_name, query_sql in self.queries.items():
             print(f"[Layer 4] Running query: {query_name}...")
-            results = self.execute_query(query_sql)
+            try:
+                results = self.execute_query(query_sql)
+            except Exception as e:
+                # Extra safety: per-query guard so one failure never stops others
+                print(f"[Layer 4] Warning: query '{query_name}' failed: {e}")
+                results = []
             all_results[query_name] = results
-            print(f"[Layer 4] Found {len(results)} results")
+            print(f"[Layer 4] Found {len(results)} results for {query_name}")
         
         return all_results
     

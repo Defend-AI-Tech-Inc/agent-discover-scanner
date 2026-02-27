@@ -1,7 +1,9 @@
 """Tetragon event monitor for Kubernetes."""
 
 import json
+import select
 import subprocess
+import threading
 from collections import defaultdict
 from datetime import datetime
 from pathlib import Path
@@ -31,7 +33,12 @@ class TetragonMonitor:
         self.namespace = namespace
         self.detections = defaultdict(list)
     
-    def stream_events(self, follow: bool = True) -> Iterator[TetragonEvent]:
+    def stream_events(
+        self,
+        follow: bool = True,
+        duration: Optional[int] = None,
+        stop_event: Optional[threading.Event] = None,
+    ) -> Iterator[TetragonEvent]:
         """
         Stream Tetragon events from kubectl logs.
         
@@ -49,6 +56,9 @@ class TetragonMonitor:
             "-o", "jsonpath={.items[0].metadata.name}",
         ]
         
+        process: Optional[subprocess.Popen] = None
+        start_time = datetime.now()
+
         try:
             pod_name = subprocess.check_output(get_pod_cmd, text=True).strip()
         except subprocess.CalledProcessError:
@@ -74,30 +84,54 @@ class TetragonMonitor:
                 stderr=subprocess.PIPE,
                 text=True,
             )
-            
-            for line in process.stdout:
-                line = line.strip()
-                if not line:
-                    continue
-                
-                try:
-                    raw_event = json.loads(line)
-                    event = parse_tetragon_event(raw_event)
-                    
-                    if event and event.sock_arg:  # Only yield network events
-                        yield event
-                        
-                except json.JSONDecodeError:
-                    continue
-                except Exception as e:
-                    console.print(f"[yellow]Warning: Failed to parse event: {e}[/yellow]")
-                    continue
-                    
+
+            # Poll for new log lines without blocking forever
+            while True:
+                # Stop signal (for daemon mode or external control)
+                if stop_event and stop_event.is_set():
+                    break
+
+                # Wait up to 1 second for data
+                ready, _, _ = select.select([process.stdout], [], [], 1.0)
+                if ready:
+                    line = process.stdout.readline()
+                    if not line:  # EOF
+                        break
+                    line = line.strip()
+                    if not line:
+                        continue
+
+                    try:
+                        raw_event = json.loads(line)
+                        event = parse_tetragon_event(raw_event)
+
+                        if event and event.sock_arg:  # Only yield network events
+                            yield event
+
+                    except json.JSONDecodeError:
+                        continue
+                    except Exception as e:
+                        console.print(f"[yellow]Warning: Failed to parse event: {e}[/yellow]")
+                        continue
+
+                # Check duration independent of event arrival
+                if duration is not None:
+                    elapsed = (datetime.now() - start_time).total_seconds()
+                    if elapsed >= duration:
+                        break
+
         except KeyboardInterrupt:
             console.print("\n[yellow]Monitoring stopped by user[/yellow]")
         except subprocess.CalledProcessError as e:
             console.print(f"[red]Error running kubectl: {e}[/red]")
             raise
+        finally:
+            if process is not None:
+                process.terminate()
+                try:
+                    process.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    process.kill()
     
     def detect_llm_connections(self, event: TetragonEvent) -> Optional[dict]:
         """
@@ -187,6 +221,7 @@ def monitor_k8s(
     duration: Optional[int] = None,
     output_file: Optional[Path] = None,
     output_format: str = "console",
+    stop_event: Optional[threading.Event] = None,
 ):
     """
     Monitor Kubernetes cluster for AI agent activity.
@@ -210,26 +245,25 @@ def monitor_k8s(
         console.print("Press Ctrl+C to stop\n")
     
     try:
-        start_time = datetime.now()
-        
-        for event in monitor.stream_events(follow=True):
+        for event in monitor.stream_events(
+            follow=True,
+            duration=duration,
+            stop_event=stop_event,
+        ):
             detection = monitor.detect_llm_connections(event)
-            
+
             if detection:
                 # Console output
                 if output_format == "console":
                     monitor.display_detection(detection)
-                
+
                 # JSON output
                 if json_logger:
                     json_logger.log_detection(detection)
-            
-            # Check duration
-            if duration:
-                elapsed = (datetime.now() - start_time).total_seconds()
-                if elapsed >= duration:
-                    break
-    
+
+            if stop_event and stop_event.is_set():
+                break
+
     except KeyboardInterrupt:
         pass
     finally:

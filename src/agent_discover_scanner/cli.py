@@ -1,7 +1,11 @@
 import ast
 import json
 import shutil
+import signal
 import subprocess
+import threading
+import time
+from concurrent.futures import ThreadPoolExecutor, wait
 from importlib.metadata import version as _pkg_version
 from pathlib import Path
 from typing import Optional
@@ -516,6 +520,11 @@ def scan_all(
         "--skip-layers",
         help="Comma-separated layers to skip, e.g. '3' or '2,3'",
     ),
+    daemon: bool = typer.Option(
+        False,
+        "--daemon",
+        help="Run continuously and update correlation in real time",
+    ),
 ):
     """
     Run a full 4-layer AI agent scan and correlate all findings.
@@ -556,38 +565,43 @@ def scan_all(
     layer4_json = output_dir / "layer4_endpoint.json"
     inventory_path = output_dir / "agent_inventory.json"
 
-    code_findings = []
-    network_findings = []
-    layer3_findings = []
-    layer4_findings = []
+    # Shared state for findings
+    code_findings: list = []
+    network_findings: list = []
+    layer3_findings: list = []
+    layer4_findings: list = []
+    findings_lock = threading.Lock()
 
-    # Layer 1: Code discovery
-    if is_skipped(1):
-        console.print("[yellow]Skipping Layer 1 (code discovery) per configuration[/yellow]")
-    else:
+    stop_event = threading.Event()
+
+    def run_layer1_once() -> None:
+        nonlocal code_findings
+        if is_skipped(1):
+            console.print("[yellow]Skipping Layer 1 (code discovery) per configuration[/yellow]")
+            return
         console.print("[bold green]Layer 1: Code discovery (static code scan)[/bold green]")
         try:
-            # Reuse existing scan command to generate SARIF
             scan(path=str(scan_root), output=str(layer1_sarif), format="sarif", verbose=False)
             from agent_discover_scanner.correlator import CorrelationEngine as _CE
 
-            code_findings = _CE.load_code_findings(layer1_sarif)
+            new_findings = _CE.load_code_findings(layer1_sarif)
+            with findings_lock:
+                code_findings = new_findings
             console.print(f"[cyan]Layer 1 findings loaded: {len(code_findings)}[/cyan]\n")
         except Exception as e:
             console.print(f"[red]Layer 1 scan failed:[/red] {e}")
-            code_findings = []
 
-    # Layer 2: Network discovery
-    if is_skipped(2):
-        console.print("[yellow]Skipping Layer 2 (network discovery) per configuration[/yellow]")
-    else:
+    def run_layer2_once() -> None:
+        nonlocal network_findings
+        if is_skipped(2):
+            console.print("[yellow]Skipping Layer 2 (network discovery) per configuration[/yellow]")
+            return
         console.print("[bold green]Layer 2: Network discovery (runtime connections)[/bold green]")
         try:
             net_monitor = NetworkMonitor()
             summary = net_monitor.monitor(duration_seconds=duration)
             layer2_json.write_text(json.dumps(summary, indent=2))
 
-            # Build findings list for correlation
             providers = getattr(CorrelationEngine, "_PROVIDERS", set())
             nf = []
             for conn in summary.get("connections", []):
@@ -607,7 +621,8 @@ def scan_all(
                         "timestamp": conn.get("timestamp"),
                     }
                 )
-            network_findings = nf
+            with findings_lock:
+                network_findings = nf
             console.print(
                 f"[cyan]Layer 2 connections contributing to correlation: {len(network_findings)}[/cyan]\n"
             )
@@ -616,15 +631,18 @@ def scan_all(
         except Exception as e:
             console.print(f"[red]Layer 2 monitoring failed:[/red] {e}")
 
-    # Layer 3: Kubernetes / runtime discovery via Tetragon
-    if is_skipped(3):
-        console.print("[yellow]Skipping Layer 3 (Kubernetes discovery) per configuration[/yellow]")
-    else:
+    def run_layer3_once() -> None:
+        nonlocal layer3_findings
+        if is_skipped(3):
+            console.print("[yellow]Skipping Layer 3 (Kubernetes discovery) per configuration[/yellow]")
+            return
         console.print("[bold green]Layer 3: Kubernetes runtime discovery (Tetragon)[/bold green]")
         if layer3_file:
             try:
                 validated = validate_file_exists(str(layer3_file), "Layer 3 findings file")
-                layer3_findings = CorrelationEngine.load_layer3_findings(validated)
+                new_findings = CorrelationEngine.load_layer3_findings(validated)
+                with findings_lock:
+                    layer3_findings = new_findings
                 console.print(
                     f"[cyan]Loaded existing Layer 3 findings from {validated}[/cyan]\n"
                 )
@@ -633,34 +651,36 @@ def scan_all(
             except Exception as e:
                 console.print(f"[red]Failed to load Layer 3 findings:[/red] {e}")
         else:
-            # Only run if kubectl is available
             if shutil.which("kubectl") is None:
                 console.print(
                     "[yellow]kubectl not found; skipping live Layer 3 Kubernetes monitoring[/yellow]"
                 )
-            else:
-                try:
-                    run_monitor_k8s(
-                        namespace="kube-system",
-                        duration=duration,
-                        output_file=layer3_jsonl,
-                        output_format="jsonl",
-                    )
-                    layer3_findings = CorrelationEngine.load_layer3_findings(layer3_jsonl)
-                    console.print(
-                        f"[cyan]Layer 3 findings loaded: {len(layer3_findings)}[/cyan]\n"
-                    )
-                except FileNotFoundError:
-                    console.print(
-                        "[yellow]kubectl or Tetragon not available; skipping Layer 3[/yellow]"
-                    )
-                except Exception as e:
-                    console.print(f"[red]Layer 3 monitoring failed:[/red] {e}")
+                return
+            try:
+                run_monitor_k8s(
+                    namespace="kube-system",
+                    duration=duration,
+                    output_file=layer3_jsonl,
+                    output_format="jsonl",
+                )
+                new_findings = CorrelationEngine.load_layer3_findings(layer3_jsonl)
+                with findings_lock:
+                    layer3_findings = new_findings
+                console.print(
+                    f"[cyan]Layer 3 findings loaded: {len(layer3_findings)}[/cyan]\n"
+                )
+            except FileNotFoundError:
+                console.print(
+                    "[yellow]kubectl or Tetragon not available; skipping Layer 3[/yellow]"
+                )
+            except Exception as e:
+                console.print(f"[red]Layer 3 monitoring failed:[/red] {e}")
 
-    # Layer 4: Endpoint discovery via osquery
-    if is_skipped(4):
-        console.print("[yellow]Skipping Layer 4 (endpoint discovery) per configuration[/yellow]")
-    else:
+    def run_layer4_once() -> None:
+        nonlocal layer4_findings
+        if is_skipped(4):
+            console.print("[yellow]Skipping Layer 4 (endpoint discovery) per configuration[/yellow]")
+            return
         console.print("[bold green]Layer 4: Endpoint discovery (osquery)[/bold green]")
         try:
             subprocess.run(
@@ -673,36 +693,157 @@ def scan_all(
             console.print(
                 "[yellow]osquery not installed or not available; skipping Layer 4[/yellow]"
             )
-        else:
+            return
+
+        try:
+            from agent_discover_scanner.layer4.osquery_executor import OsqueryExecutor
+
+            executor = OsqueryExecutor()
+            raw_results = executor.discover_all()
+
+            flat_rows = []
+            for rows in raw_results.values():
+                if isinstance(rows, list):
+                    flat_rows.extend(rows)
+
+            layer4_json.write_text(json.dumps({"data": flat_rows}, indent=2))
+            new_findings = CorrelationEngine.load_layer4_findings(layer4_json)
+            with findings_lock:
+                layer4_findings = new_findings
+            console.print(
+                f"[cyan]Layer 4 endpoint findings contributing to correlation: {len(layer4_findings)}[/cyan]\n"
+            )
+        except Exception as e:
+            console.print(f"[red]Layer 4 endpoint scan failed:[/red] {e}")
+
+    def run_correlation_once() -> dict:
+        with findings_lock:
+            cf = list(code_findings)
+            nf = list(network_findings)
+            l3 = list(layer3_findings)
+            l4 = list(layer4_findings)
+        console.print("[bold cyan]Running correlation across all available layers...[/bold cyan]\n")
+        inventory = CorrelationEngine.correlate(
+            code_findings=cf,
+            network_findings=nf,
+            layer4_findings=l4,
+            layer3_findings=l3,
+        )
+        return CorrelationEngine.generate_report(inventory, inventory_path)
+
+    # Non-daemon: run once with layers in parallel
+    if not daemon:
+        with ThreadPoolExecutor(max_workers=4) as executor:
+            futures = []
+            # Fast tasks: Layer 1 + 4
+            futures.append(executor.submit(run_layer1_once))
+            futures.append(executor.submit(run_layer4_once))
+            # Long-running tasks: Layer 2 + 3
+            futures.append(executor.submit(run_layer2_once))
+            futures.append(executor.submit(run_layer3_once))
+            wait(futures)
+
+        report = run_correlation_once()
+    else:
+        # Daemon mode: run layers continuously and update correlation
+        console.print("[bold yellow]Daemon mode enabled: running continuous monitoring[/bold yellow]\n")
+
+        def signal_handler(signum, frame):
+            console.print(f"\n[yellow]Received signal {signum}, shutting down daemon...[/yellow]")
+            stop_event.set()
+
+        try:
+            signal.signal(signal.SIGINT, signal_handler)
+            signal.signal(signal.SIGTERM, signal_handler)
+        except ValueError:
+            # Signal handling may not be available in some environments (e.g. Windows)
+            pass
+
+        def layer1_daemon():
+            # Try to use watchdog if available for faster updates, otherwise poll every 5 minutes
             try:
-                from agent_discover_scanner.layer4.osquery_executor import OsqueryExecutor
+                from watchdog.events import FileSystemEventHandler
+                from watchdog.observers import Observer
 
-                executor = OsqueryExecutor()
-                raw_results = executor.discover_all()
+                class ChangeHandler(FileSystemEventHandler):
+                    def on_any_event(self, event):
+                        if stop_event.is_set():
+                            return
+                        run_layer1_once()
 
-                # Flatten all rows into a single list for correlation
-                flat_rows = []
-                for rows in raw_results.values():
-                    if isinstance(rows, list):
-                        flat_rows.extend(rows)
+                observer = Observer()
+                handler = ChangeHandler()
+                observer.schedule(handler, str(scan_root), recursive=True)
+                observer.start()
+                try:
+                    while not stop_event.is_set():
+                        time.sleep(1)
+                finally:
+                    observer.stop()
+                    observer.join()
+            except ImportError:
+                # Fallback: periodic rescan every 5 minutes
+                while not stop_event.is_set():
+                    run_layer1_once()
+                    stop_event.wait(300)
 
-                layer4_json.write_text(json.dumps({"data": flat_rows}, indent=2))
-                layer4_findings = CorrelationEngine.load_layer4_findings(layer4_json)
-                console.print(
-                    f"[cyan]Layer 4 endpoint findings contributing to correlation: {len(layer4_findings)}[/cyan]\n"
-                )
-            except Exception as e:
-                console.print(f"[red]Layer 4 endpoint scan failed:[/red] {e}")
+        def layer2_daemon():
+            while not stop_event.is_set():
+                run_layer2_once()
+                if stop_event.wait(duration):
+                    break
 
-    # Correlation
-    console.print("[bold cyan]Running correlation across all available layers...[/bold cyan]\n")
-    inventory = CorrelationEngine.correlate(
-        code_findings=code_findings,
-        network_findings=network_findings,
-        layer4_findings=layer4_findings,
-        layer3_findings=layer3_findings,
-    )
-    report = CorrelationEngine.generate_report(inventory, inventory_path)
+        def layer3_daemon():
+            while not stop_event.is_set():
+                run_layer3_once()
+                if stop_event.wait(duration):
+                    break
+
+        def layer4_daemon():
+            while not stop_event.is_set():
+                run_layer4_once()
+                if stop_event.wait(60):
+                    break
+
+        def correlation_daemon():
+            last_report_json = None
+            while not stop_event.is_set():
+                report_local = run_correlation_once()
+                if format == "json":
+                    current_json = json.dumps(report_local, sort_keys=True)
+                else:
+                    current_json = None
+
+                # Only print full JSON if user requested; file is always written by run_correlation_once
+                if format == "json" and current_json != last_report_json:
+                    console.print(current_json)
+                    last_report_json = current_json
+
+                if stop_event.wait(30):
+                    break
+
+        threads = [
+            threading.Thread(target=layer1_daemon, name="layer1-daemon", daemon=True),
+            threading.Thread(target=layer2_daemon, name="layer2-daemon", daemon=True),
+            threading.Thread(target=layer3_daemon, name="layer3-daemon", daemon=True),
+            threading.Thread(target=layer4_daemon, name="layer4-daemon", daemon=True),
+            threading.Thread(target=correlation_daemon, name="correlator-daemon", daemon=True),
+        ]
+
+        for t in threads:
+            t.start()
+
+        try:
+            # Wait until stop_event is set
+            while not stop_event.is_set():
+                time.sleep(1)
+        except KeyboardInterrupt:
+            stop_event.set()
+        finally:
+            # Give threads a moment to shut down gracefully
+            time.sleep(2)
+        # After daemon shutdown, print one final summary
+        report = run_correlation_once()
 
     # Final summary table
     console.print("\n[bold cyan]Correlation Summary[/bold cyan]\n")

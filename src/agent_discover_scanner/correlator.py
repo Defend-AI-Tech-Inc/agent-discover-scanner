@@ -13,6 +13,7 @@ from typing import Dict, List, Optional, Tuple
 
 # Known LLM API hostnames for inferring provider from remote_address (Layer 4)
 LLM_HOSTNAME_TO_PROVIDER: List[Tuple[str, str]] = [
+    # Direct API endpoints
     ("api.openai.com", "openai"),
     ("api.anthropic.com", "anthropic"),
     ("api.groq.com", "groq"),
@@ -24,6 +25,19 @@ LLM_HOSTNAME_TO_PROVIDER: List[Tuple[str, str]] = [
     ("api.together.xyz", "together"),
     ("api.huggingface.co", "huggingface"),
     ("ollama", "ollama"),
+    # Browser frontends / human usage
+    ("chat.openai.com", "openai"),
+    ("chatgpt.com", "openai"),
+    ("claude.ai", "anthropic"),
+    ("gemini.google.com", "google"),
+    ("perplexity.ai", "perplexity"),
+    ("poe.com", "perplexity"),  # Poe often fronts multiple providers; treat as generic
+    ("huggingface.co", "huggingface"),
+    ("copilot.microsoft.com", "openai"),
+    ("bard.google.com", "google"),
+    ("character.ai", "openai"),  # generic LLM frontend; map to openai-style bucket
+    ("midjourney.com", "openai"),
+    ("replicate.com", "openai"),
 ]
 
 
@@ -130,7 +144,7 @@ class CorrelationEngine:
 
     @classmethod
     def _infer_provider_from_address(cls, remote_address: str) -> Optional[str]:
-        """Infer LLM provider from remote hostname/address."""
+        """Infer LLM provider from remote hostname/address or full URL."""
         if not remote_address:
             return None
         addr_lower = remote_address.lower()
@@ -143,7 +157,7 @@ class CorrelationEngine:
     def load_layer4_findings(cls, layer4_path: Path) -> List[Dict]:
         """
         Read osquery JSON output; return list of dicts with process_name, pid,
-        remote_address, provider (inferred from remote_address against known LLM hostnames).
+        remote_address (or URL), and provider (inferred from remote_address/URL against known LLM hostnames).
         """
         if not layer4_path.exists():
             return []
@@ -174,6 +188,7 @@ class CorrelationEngine:
                         pid = int(pid)
                     except (TypeError, ValueError):
                         pid = None
+
                 remote_address = (
                     row.get("remote_address")
                     or row.get("remote_addr")
@@ -183,20 +198,30 @@ class CorrelationEngine:
                 )
                 if isinstance(remote_address, int):
                     remote_address = str(remote_address)
-                provider = cls._infer_provider_from_address(remote_address)
+
+                # Browser history rows: infer provider from URL first if present
+                url = row.get("url") or ""
+                provider = None
+                if url:
+                    provider = cls._infer_provider_from_address(url)
+                if provider is None:
+                    provider = cls._infer_provider_from_address(remote_address)
+
                 if provider is None:
                     continue
+
                 local_port = row.get("local_port")
                 if local_port is not None and not isinstance(local_port, int):
                     try:
                         local_port = int(local_port)
                     except (TypeError, ValueError):
                         local_port = None
+
                 results.append(
                     {
                         "process_name": process_name,
                         "pid": pid,
-                        "remote_address": remote_address,
+                        "remote_address": remote_address or url,
                         "provider": provider,
                         "local_port": local_port,
                     }

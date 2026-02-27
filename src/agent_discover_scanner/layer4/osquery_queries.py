@@ -231,23 +231,14 @@ class AIDiscoveryQueries:
             "process_open_sockets": AIDiscoveryQueries.PROCESS_OPEN_SOCKETS,
         }
         
-        # Platform-specific queries
+        # Platform-specific queries (browser history now handled via direct SQLite)
         if platform == "darwin":
             queries["desktop_apps"] = AIDiscoveryQueries.MACOS_AI_APPS
-            queries["chrome_history"] = AIDiscoveryQueries.CHROME_AI_HISTORY
-            queries["safari_history"] = AIDiscoveryQueries.SAFARI_AI_HISTORY
-            queries["edge_history"] = AIDiscoveryQueries.EDGE_AI_HISTORY
-            queries["firefox_history"] = AIDiscoveryQueries.FIREFOX_AI_HISTORY
             queries["vscode_extensions"] = AIDiscoveryQueries.VSCODE_AI_EXTENSIONS
         elif platform == "windows":
             queries["desktop_apps"] = AIDiscoveryQueries.WINDOWS_AI_APPS
-            queries["chrome_history"] = AIDiscoveryQueries.CHROME_AI_HISTORY
-            queries["edge_history"] = AIDiscoveryQueries.EDGE_AI_HISTORY
-            queries["firefox_history"] = AIDiscoveryQueries.FIREFOX_AI_HISTORY
         else:  # linux
             queries["python_packages"] = AIDiscoveryQueries.PYTHON_AI_PACKAGES
             queries["npm_packages"] = AIDiscoveryQueries.NPM_AI_PACKAGES
-            queries["chrome_history"] = AIDiscoveryQueries.CHROME_AI_HISTORY
-            queries["firefox_history"] = AIDiscoveryQueries.FIREFOX_AI_HISTORY
         
         return queries

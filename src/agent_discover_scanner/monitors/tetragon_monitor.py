@@ -1,13 +1,14 @@
 """Tetragon event monitor for Kubernetes."""
 
 import json
+import os
 import select
 import subprocess
 import threading
 from collections import defaultdict
 from datetime import datetime
 from pathlib import Path
-from typing import Iterator, Optional
+from typing import Iterator, Optional, Union
 
 from rich.console import Console
 from rich.table import Table
@@ -38,17 +39,72 @@ class TetragonMonitor:
         follow: bool = True,
         duration: Optional[int] = None,
         stop_event: Optional[threading.Event] = None,
+        tetragon_export_file: Optional[Union[str, Path]] = None,
     ) -> Iterator[TetragonEvent]:
         """
-        Stream Tetragon events from kubectl logs.
+        Stream Tetragon events from kubectl logs or from a local export file.
         
         Args:
             follow: If True, follow logs in real-time (like tail -f)
-            
+            duration: If set, stop after this many seconds
+            stop_event: If set, stop when this event is set
+            tetragon_export_file: If set, read from this file instead of kubectl
+                (e.g. /var/run/cilium/tetragon/tetragon.log). Production-recommended.
+        
         Yields:
             Parsed TetragonEvent objects
         """
-        # Get first Tetragon pod (kubectl logs with label selector fails with multiple pods)
+        start_time = datetime.now()
+        process: Optional[subprocess.Popen] = None
+        file_handle = None
+
+        if tetragon_export_file:
+            # Production path: tail Tetragon export file directly (no API server load)
+            path = Path(tetragon_export_file)
+            if not path.exists():
+                console.print(f"[red]Error: Tetragon export file not found: {path}[/red]")
+                raise FileNotFoundError(f"Tetragon export file not found: {path}")
+            try:
+                file_handle = open(path, "r")
+                file_handle.seek(0, os.SEEK_END)
+            except OSError as e:
+                console.print(f"[red]Error: Cannot open Tetragon export file: {e}[/red]")
+                raise
+            try:
+                while True:
+                    if stop_event and stop_event.is_set():
+                        break
+                    ready, _, _ = select.select([file_handle], [], [], 1.0)
+                    if ready:
+                        line = file_handle.readline()
+                        if not line:
+                            continue
+                        line = line.strip()
+                        if not line:
+                            continue
+                        try:
+                            raw_event = json.loads(line)
+                            event = parse_tetragon_event(raw_event)
+                            if event and event.sock_arg:
+                                yield event
+                        except json.JSONDecodeError:
+                            continue
+                        except Exception as e:
+                            console.print(f"[yellow]Warning: Failed to parse event: {e}[/yellow]")
+                            continue
+                    if duration is not None:
+                        elapsed = (datetime.now() - start_time).total_seconds()
+                        if elapsed >= duration:
+                            break
+            finally:
+                if file_handle is not None:
+                    try:
+                        file_handle.close()
+                    except Exception:
+                        pass
+            return
+
+        # Default: stream via kubectl logs
         get_pod_cmd = [
             "kubectl", "get", "pods",
             "-n", self.namespace,
@@ -56,9 +112,6 @@ class TetragonMonitor:
             "-o", "jsonpath={.items[0].metadata.name}",
         ]
         
-        process: Optional[subprocess.Popen] = None
-        start_time = datetime.now()
-
         try:
             pod_name = subprocess.check_output(get_pod_cmd, text=True).strip()
         except subprocess.CalledProcessError:
@@ -85,17 +138,14 @@ class TetragonMonitor:
                 text=True,
             )
 
-            # Poll for new log lines without blocking forever
             while True:
-                # Stop signal (for daemon mode or external control)
                 if stop_event and stop_event.is_set():
                     break
 
-                # Wait up to 1 second for data
                 ready, _, _ = select.select([process.stdout], [], [], 1.0)
                 if ready:
                     line = process.stdout.readline()
-                    if not line:  # EOF
+                    if not line:
                         break
                     line = line.strip()
                     if not line:
@@ -105,7 +155,7 @@ class TetragonMonitor:
                         raw_event = json.loads(line)
                         event = parse_tetragon_event(raw_event)
 
-                        if event and event.sock_arg:  # Only yield network events
+                        if event and event.sock_arg:
                             yield event
 
                     except json.JSONDecodeError:
@@ -114,7 +164,6 @@ class TetragonMonitor:
                         console.print(f"[yellow]Warning: Failed to parse event: {e}[/yellow]")
                         continue
 
-                # Check duration independent of event arrival
                 if duration is not None:
                     elapsed = (datetime.now() - start_time).total_seconds()
                     if elapsed >= duration:
@@ -222,6 +271,7 @@ def monitor_k8s(
     output_file: Optional[Path] = None,
     output_format: str = "console",
     stop_event: Optional[threading.Event] = None,
+    tetragon_export_file: Optional[Union[str, Path]] = None,
 ):
     """
     Monitor Kubernetes cluster for AI agent activity.
@@ -231,6 +281,9 @@ def monitor_k8s(
         duration: Monitoring duration in seconds (None = infinite)
         output_file: Path to output file (for json/jsonl formats)
         output_format: Output format: "console", "json", or "jsonl"
+        stop_event: Optional event to signal stop (e.g. daemon mode)
+        tetragon_export_file: If set, read from this file instead of kubectl logs
+            (e.g. /var/run/cilium/tetragon/tetragon.log). Lower API server overhead.
     """
     monitor = TetragonMonitor(namespace=namespace)
     
@@ -241,7 +294,10 @@ def monitor_k8s(
     
     if output_format == "console":
         console.print("[bold green]🔍 Monitoring Kubernetes cluster for AI agents...[/bold green]")
-        console.print(f"Tetragon namespace: {namespace}")
+        if tetragon_export_file:
+            console.print(f"[dim]Reading from: {tetragon_export_file}[/dim]")
+        else:
+            console.print(f"Tetragon namespace: {namespace}")
         console.print("Press Ctrl+C to stop\n")
     
     try:
@@ -249,6 +305,7 @@ def monitor_k8s(
             follow=True,
             duration=duration,
             stop_event=stop_event,
+            tetragon_export_file=tetragon_export_file,
         ):
             detection = monitor.detect_llm_connections(event)
 

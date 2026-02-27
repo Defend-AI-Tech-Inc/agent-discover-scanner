@@ -5,6 +5,7 @@ Creates unified agent inventory and detects Ghost Agents.
 """
 
 import json
+import socket
 from dataclasses import asdict, dataclass
 from datetime import datetime
 from pathlib import Path
@@ -39,6 +40,24 @@ LLM_HOSTNAME_TO_PROVIDER: List[Tuple[str, str]] = [
     ("midjourney.com", "openai"),
     ("replicate.com", "openai"),
 ]
+
+# Process-name heuristics for endpoint/browser processes
+PROCESS_NAME_TO_PROVIDER: List[Tuple[str, str]] = [
+    ("claude", "anthropic"),
+    ("cursor", "anthropic"),  # Cursor uses Claude
+    ("copilot", "openai"),
+    ("onedrive", "openai"),  # Microsoft OpenAI partnership
+]
+
+# Browser processes for marking human/browser-based Shadow AI usage
+BROWSER_PROCESS_NAMES: Tuple[str, ...] = (
+    "chrome",
+    "msedge",
+    "edge",
+    "safari",
+    "firefox",
+    "brave",
+)
 
 
 @dataclass
@@ -182,6 +201,8 @@ class CorrelationEngine:
                     or row.get("process")
                     or ""
                 )
+                name_lower = process_name.lower()
+
                 pid = row.get("pid")
                 if pid is not None and not isinstance(pid, int):
                     try:
@@ -199,12 +220,42 @@ class CorrelationEngine:
                 if isinstance(remote_address, int):
                     remote_address = str(remote_address)
 
-                # Browser history rows: infer provider from URL first if present
+                # Optional URL field (e.g., browser history rows)
                 url = row.get("url") or ""
-                provider = None
+
+                provider: Optional[str] = None
+
+                # 1) Browser history rows: infer provider from URL first if present
                 if url:
                     provider = cls._infer_provider_from_address(url)
-                if provider is None:
+
+                # 2) Process-name heuristics (Claude, Cursor, Copilot, Onedrive, etc.)
+                if provider is None and process_name:
+                    for key, p in PROCESS_NAME_TO_PROVIDER:
+                        if key in name_lower:
+                            provider = p
+                            break
+
+                # 3) Reverse DNS for raw IPs from process_open_sockets
+                if provider is None and remote_address:
+                    is_ipv4 = (
+                        remote_address.count(".") == 3
+                        and all(
+                            part.isdigit() and 0 <= int(part) <= 255
+                            for part in remote_address.split(".")
+                        )
+                    )
+                    if is_ipv4:
+                        try:
+                            host, _, _ = socket.gethostbyaddr(remote_address)
+                            provider = cls._infer_provider_from_address(host)
+                        except (socket.herror, OSError):
+                            pass
+                        except Exception:
+                            pass
+
+                # 4) Direct hostname/URL mapping from remote_address
+                if provider is None and remote_address:
                     provider = cls._infer_provider_from_address(remote_address)
 
                 if provider is None:
@@ -217,15 +268,22 @@ class CorrelationEngine:
                     except (TypeError, ValueError):
                         local_port = None
 
-                results.append(
-                    {
-                        "process_name": process_name,
-                        "pid": pid,
-                        "remote_address": remote_address or url,
-                        "provider": provider,
-                        "local_port": local_port,
-                    }
-                )
+                # Mark browser-sourced Shadow AI when browser processes connect to LLM domains
+                source = None
+                if any(b in name_lower for b in BROWSER_PROCESS_NAMES):
+                    source = "browser"
+
+                result: Dict = {
+                    "process_name": process_name,
+                    "pid": pid,
+                    "remote_address": remote_address or url,
+                    "provider": provider,
+                    "local_port": local_port,
+                }
+                if source:
+                    result["source"] = source
+
+                results.append(result)
             return results
         except (json.JSONDecodeError, KeyError):
             return []

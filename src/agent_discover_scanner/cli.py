@@ -929,18 +929,26 @@ def monitor_k8s(
         "-f",
         help="Output format: console, json, or jsonl",
     ),
+    tetragon_export_file: Optional[Path] = typer.Option(
+        None,
+        "--tetragon-export-file",
+        help="Read from Tetragon export file instead of kubectl (e.g. /var/run/cilium/tetragon/tetragon.log). Lower API server overhead.",
+    ),
 ):
     """
     Monitor Kubernetes cluster for AI agent activity using Tetragon.
     
     Requires:
     - Cilium Tetragon installed in the cluster
-    - kubectl configured and authenticated
+    - kubectl configured and authenticated (unless --tetragon-export-file is used)
     - TracingPolicy deployed (see docs/TETRAGON_SETUP.md)
     
     Examples:
         # Monitor with console output
         agent-discover-scanner monitor-k8s
+        
+        # Production: read from local Tetragon export file (no kubectl/API load)
+        agent-discover-scanner monitor-k8s --tetragon-export-file /var/run/cilium/tetragon/tetragon.log
         
         # Save detections to JSONL file
         agent-discover-scanner monitor-k8s --output detections.jsonl --format jsonl
@@ -962,11 +970,15 @@ def monitor_k8s(
             duration=duration,
             output_file=output_path,
             output_format=output_format,
+            tetragon_export_file=tetragon_export_file,
         )
-    except FileNotFoundError:
-        console.print(
-            "[red]Error: kubectl not found. Please install kubectl and configure cluster access.[/red]"
-        )
+    except FileNotFoundError as e:
+        if tetragon_export_file and "Tetragon export file" in str(e):
+            console.print(f"[red]Error: {e}[/red]")
+        else:
+            console.print(
+                "[red]Error: kubectl not found. Please install kubectl and configure cluster access.[/red]"
+            )
         raise typer.Exit(1)
     except Exception as e:
         console.print(f"[red]Error: {e}[/red]")

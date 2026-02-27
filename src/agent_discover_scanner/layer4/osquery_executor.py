@@ -1,7 +1,13 @@
-import subprocess
 import json
+import os
 import platform
-from typing import List, Dict
+import shutil
+import sqlite3
+import subprocess
+import tempfile
+from pathlib import Path
+from typing import Dict, List, Tuple
+
 from agent_discover_scanner.layer4.osquery_queries import AIDiscoveryQueries
 
 class OsqueryExecutor:
@@ -100,8 +106,210 @@ class OsqueryExecutor:
                 results = []
             all_results[query_name] = results
             print(f"[Layer 4] Found {len(results)} results for {query_name}")
-        
+
+        # Add browser history findings via direct SQLite reads
+        browser_history = self.scan_browser_history()
+        if browser_history:
+            all_results["browser_history"] = browser_history
+            print(f"[Layer 4] Browser history findings: {len(browser_history)}")
+
         return all_results
+
+    def _get_browser_db_candidates(self) -> List[Tuple[str, str, Path]]:
+        """
+        Return (browser_name, kind, path) tuples where kind is one of:
+        'chrome', 'safari', 'firefox'.
+        """
+        system = platform.system().lower()
+        home = Path.home()
+        candidates: List[Tuple[str, str, Path]] = []
+
+        if system == "darwin":
+            candidates.append(
+                (
+                    "chrome",
+                    "chrome",
+                    home / "Library/Application Support/Google/Chrome/Default/History",
+                )
+            )
+            candidates.append(
+                (
+                    "edge",
+                    "chrome",
+                    home / "Library/Application Support/Microsoft Edge/Default/History",
+                )
+            )
+            candidates.append(("safari", "safari", home / "Library/Safari/History.db"))
+            ff_root = home / "Library/Application Support/Firefox/Profiles"
+            if ff_root.exists():
+                for profile in ff_root.glob("*.default*"):
+                    candidates.append(("firefox", "firefox", profile / "places.sqlite"))
+
+        elif system == "windows":
+            local = os.environ.get("LOCALAPPDATA")
+            appdata = os.environ.get("APPDATA")
+            if local:
+                candidates.append(
+                    (
+                        "chrome",
+                        "chrome",
+                        Path(local) / "Google" / "Chrome" / "User Data" / "Default" / "History",
+                    )
+                )
+                candidates.append(
+                    (
+                        "edge",
+                        "chrome",
+                        Path(local) / "Microsoft" / "Edge" / "User Data" / "Default" / "History",
+                    )
+                )
+            if appdata:
+                ff_root = Path(appdata) / "Mozilla" / "Firefox" / "Profiles"
+                if ff_root.exists():
+                    for profile in ff_root.glob("*.default*"):
+                        candidates.append(("firefox", "firefox", profile / "places.sqlite"))
+
+        else:  # linux and others
+            candidates.append(
+                (
+                    "chrome",
+                    "chrome",
+                    home / ".config" / "google-chrome" / "Default" / "History",
+                )
+            )
+            candidates.append(
+                (
+                    "chrome",
+                    "chrome",
+                    home / ".config" / "chromium" / "Default" / "History",
+                )
+            )
+            ff_root = home / ".mozilla" / "firefox"
+            if ff_root.exists():
+                for profile in ff_root.glob("*.default*"):
+                    candidates.append(("firefox", "firefox", profile / "places.sqlite"))
+
+        return candidates
+
+    def scan_browser_history(self) -> List[Dict]:
+        """
+        Read browser history databases directly via SQLite.
+
+        Returns rows compatible with Layer 4 findings format, marked with
+        source: "browser_history".
+        """
+        candidates = self._get_browser_db_candidates()
+        findings: List[Dict] = []
+
+        if not candidates:
+            return findings
+
+        # Common URL filter across browsers
+        url_filter = """
+        url LIKE '%openai%' OR
+        url LIKE '%anthropic%' OR
+        url LIKE '%claude.ai%' OR
+        url LIKE '%gemini%' OR
+        url LIKE '%perplexity%' OR
+        url LIKE '%huggingface%' OR
+        url LIKE '%copilot.microsoft%' OR
+        url LIKE '%poe.com%' OR
+        url LIKE '%character.ai%'
+        """
+
+        for browser, kind, db_path in candidates:
+            if not db_path.exists():
+                continue
+
+            tmp = Path(tempfile.mktemp(suffix=".db"))
+            conn = None
+            try:
+                shutil.copy2(db_path, tmp)
+                conn = sqlite3.connect(tmp)
+                cursor = conn.cursor()
+
+                if kind == "chrome":
+                    sql = f"""
+                    SELECT url, title, last_visit_time
+                    FROM urls
+                    WHERE {url_filter}
+                    ORDER BY last_visit_time DESC
+                    LIMIT 100
+                    """
+                    rows = cursor.execute(sql).fetchall()
+                    for url, title, last_visit in rows:
+                        findings.append(
+                            {
+                                "process_name": browser,
+                                "pid": None,
+                                "url": url,
+                                "title": title,
+                                "last_visit_time": last_visit,
+                                "source": "browser_history",
+                            }
+                        )
+
+                elif kind == "safari":
+                    # Safari: history_visits JOIN history_items (no title column in Safari schema)
+                    sql = f"""
+                    SELECT history_items.url, history_visits.visit_time
+                    FROM history_visits
+                    JOIN history_items
+                      ON history_visits.history_item = history_items.id
+                    WHERE {url_filter}
+                    ORDER BY history_visits.visit_time DESC
+                    LIMIT 100
+                    """
+                    rows = cursor.execute(sql).fetchall()
+                    for url, visit_time in rows:
+                        findings.append(
+                            {
+                                "process_name": browser,
+                                "pid": None,
+                                "url": url,
+                                "title": None,
+                                "last_visit_time": visit_time,
+                                "source": "browser_history",
+                            }
+                        )
+
+                elif kind == "firefox":
+                    # Firefox: moz_places table
+                    sql = f"""
+                    SELECT url, title, last_visit_date
+                    FROM moz_places
+                    WHERE {url_filter}
+                    ORDER BY last_visit_date DESC
+                    LIMIT 100
+                    """
+                    rows = cursor.execute(sql).fetchall()
+                    for url, title, last_visit in rows:
+                        findings.append(
+                            {
+                                "process_name": browser,
+                                "pid": None,
+                                "url": url,
+                                "title": title,
+                                "last_visit_time": last_visit,
+                                "source": "browser_history",
+                            }
+                        )
+
+            except Exception as e:
+                print(f"[Layer 4] Warning: failed to read browser history from {db_path}: {e}")
+            finally:
+                try:
+                    if conn is not None:
+                        conn.close()
+                except Exception:
+                    pass
+                try:
+                    if tmp.exists():
+                        tmp.unlink()
+                except Exception:
+                    pass
+
+        return findings
     
     def get_summary_stats(self, results: Dict[str, List[Dict]]) -> Dict:
         """Generate summary statistics"""

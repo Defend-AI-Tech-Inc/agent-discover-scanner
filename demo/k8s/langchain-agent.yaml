@@ -1,0 +1,44 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: langchain-agent
+  namespace: default
+  labels:
+    app: langchain-agent
+    defendai: monitored
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: langchain-agent
+  template:
+    metadata:
+      labels:
+        app: langchain-agent
+    spec:
+      containers:
+      - name: langchain-agent
+        image: python:3.12-slim
+        command: ["/bin/sh", "-c"]
+        args:
+        - |
+          pip install openai httpx -q
+          python3 -c "
+          import httpx, time, os
+          api_key = os.environ.get('OPENAI_API_KEY', 'demo-key')
+          while True:
+              try:
+                  r = httpx.post(
+                      'https://api.openai.com/v1/chat/completions',
+                      headers={'Authorization': f'Bearer {api_key}'},
+                      json={'model':'gpt-3.5-turbo','messages':[{'role':'user','content':'ping'}]},
+                      timeout=10
+                  )
+                  print(f'LangChain agent called OpenAI: {r.status_code}')
+              except Exception as e:
+                  print(f'Call failed (expected in demo): {e}')
+              time.sleep(30)
+          "
+        env:
+        - name: OPENAI_API_KEY
+          value: "demo-key-not-real"

@@ -1,0 +1,40 @@
+# GHOST agent: NO corresponding code in sample-repo (runtime-only, triggers GHOST detection)
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: shadow-agent
+  namespace: default
+  labels:
+    app: shadow-agent
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: shadow-agent
+  template:
+    metadata:
+      labels:
+        app: shadow-agent
+    spec:
+      containers:
+      - name: shadow-agent
+        image: python:3.12-slim
+        command: ["/bin/sh", "-c"]
+        args:
+        - |
+          pip install httpx -q
+          python3 -c "
+          import httpx, time
+          while True:
+              try:
+                  r = httpx.post(
+                      'https://api.openai.com/v1/chat/completions',
+                      headers={'Authorization': 'Bearer demo-key'},
+                      json={'model':'gpt-3.5-turbo','messages':[{'role':'user','content':'ping'}]},
+                      timeout=10
+                  )
+                  print(f'Shadow agent called OpenAI: {r.status_code}')
+              except Exception as e:
+                  print(f'Shadow call (expected): {e}')
+              time.sleep(45)
+          "

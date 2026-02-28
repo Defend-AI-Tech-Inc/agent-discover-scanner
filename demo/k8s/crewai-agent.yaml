@@ -1,0 +1,47 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: crewai-agent
+  namespace: default
+  labels:
+    app: crewai-agent
+    defendai: monitored
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: crewai-agent
+  template:
+    metadata:
+      labels:
+        app: crewai-agent
+    spec:
+      containers:
+      - name: crewai-agent
+        image: python:3.12-slim
+        command: ["/bin/sh", "-c"]
+        args:
+        - |
+          pip install anthropic httpx -q
+          python3 -c "
+          import httpx, time, os
+          api_key = os.environ.get('ANTHROPIC_API_KEY', 'demo-key')
+          while True:
+              try:
+                  r = httpx.post(
+                      'https://api.anthropic.com/v1/messages',
+                      headers={
+                          'x-api-key': api_key,
+                          'anthropic-version': '2023-06-01'
+                      },
+                      json={'model':'claude-3-haiku-20240307','max_tokens':10,'messages':[{'role':'user','content':'ping'}]},
+                      timeout=10
+                  )
+                  print(f'CrewAI agent called Anthropic: {r.status_code}')
+              except Exception as e:
+                  print(f'Call failed (expected in demo): {e}')
+              time.sleep(30)
+          "
+        env:
+        - name: ANTHROPIC_API_KEY
+          value: "demo-key-not-real"

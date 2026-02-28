@@ -397,6 +397,51 @@ if [ "$INSTALL_LAYER_2" = true ] || [ "$INSTALL_LAYER_3" = true ]; then
         
         log_success "Tetragon installed"
     fi
+
+    # Wait for Tetragon to be ready
+    echo "Waiting for Tetragon to be ready..."
+    kubectl rollout status ds/tetragon -n kube-system --timeout=120s
+
+    # Apply network monitoring TracingPolicy
+    # Uses inet_sock_set_state tracepoint (stable across kernel versions including 6.x)
+    echo "Applying Tetragon network TracingPolicy..."
+    cat <<EOF | kubectl apply -f -
+apiVersion: cilium.io/v1alpha1
+kind: TracingPolicy
+metadata:
+  name: tcp-connect-syscall
+spec:
+  tracepoints:
+  - subsystem: "sock"
+    event: "inet_sock_set_state"
+    args:
+    - index: 0
+      type: "sock"
+    - index: 1
+      type: "int"
+    - index: 2
+      type: "int"
+EOF
+
+    # Verify policy applied
+    kubectl get tracingpolicy
+    if kubectl get tracingpolicy tcp-connect-syscall &>/dev/null; then
+        echo "✅ Tetragon TracingPolicy applied"
+    else
+        echo "⚠️  TracingPolicy failed to apply - Layer 3 network detection may not work"
+        echo "   Manual fix: kubectl apply -f install/tcp-connect-policy.yaml"
+    fi
+
+    # Fix permissions on Tetragon log
+    chmod 644 /var/run/cilium/tetragon/tetragon.log 2>/dev/null || true
+
+    # Persist permissions across Tetragon pod restarts (append to preserve existing crontab)
+    ( crontab -l 2>/dev/null; cat <<'CRON'
+@reboot sleep 30 && chmod 644 /var/run/cilium/tetragon/tetragon.log
+*/5 * * * * chmod 644 /var/run/cilium/tetragon/tetragon.log 2>/dev/null
+CRON
+    ) | crontab -
+    echo "✅ Tetragon log permissions configured"
 fi
 
 # Step 8: Verify installation

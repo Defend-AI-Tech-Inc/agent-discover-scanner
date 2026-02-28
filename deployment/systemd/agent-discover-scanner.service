@@ -1,0 +1,27 @@
+[Unit]
+Description=AgentDiscover Scanner - AI Agent Detection Daemon
+Documentation=https://github.com/Defend-AI-Tech-Inc/agent-discover-scanner
+After=network-online.target k3s.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+ExecStart=/usr/local/bin/agent-discover-scanner scan-all \
+    /opt/defendai/scan-path \
+    --daemon \
+    --output /var/log/defendai \
+    --layer3-file /var/run/cilium/tetragon/tetragon.log
+Restart=on-failure
+RestartSec=30
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=defendai-scanner
+
+# Hardening
+ProtectSystem=strict
+ReadWritePaths=/var/log/defendai /var/run/cilium/tetragon
+NoNewPrivileges=false
+
+[Install]
+WantedBy=multi-user.target

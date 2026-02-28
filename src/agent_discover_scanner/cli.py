@@ -1,11 +1,13 @@
 import ast
 import json
+import logging
 import shutil
 import signal
 import subprocess
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, wait
+from logging.handlers import RotatingFileHandler
 from importlib.metadata import version as _pkg_version
 from pathlib import Path
 from typing import Optional
@@ -38,9 +40,37 @@ from agent_discover_scanner.reports.layer4_report import Layer4Report
 import socket
 
 __version__ = _pkg_version("agent-discover-scanner")
+logger = logging.getLogger(__name__)
 
 app = typer.Typer(help="AgentDiscover Scanner: Detect Autonomous AI Agents and Shadow AI")
 console = Console()
+
+# Backoff limits for daemon layer retries
+_DAEMON_BACKOFF_INITIAL_SEC = 30
+_DAEMON_BACKOFF_MAX_SEC = 300
+# Disk space thresholds (bytes): warn below 500MB, pause Layer 3 below 100MB, resume above 200MB
+_DAEMON_DISK_WARN_BYTES = 500 * 1024 * 1024
+_DAEMON_DISK_CRITICAL_BYTES = 100 * 1024 * 1024
+_DAEMON_DISK_RESUME_BYTES = 200 * 1024 * 1024
+# Daemon log file rotation
+_DAEMON_LOG_MAX_BYTES = 20 * 1024 * 1024  # 20MB
+_DAEMON_LOG_BACKUP_COUNT = 3
+
+
+def _rotate_file_if_needed(path: Path, max_size_bytes: int, backup_count: int) -> None:
+    """If path exists and size >= max_size_bytes, rotate to path.1 .. path.N, keep backup_count backups."""
+    if not path.exists() or path.stat().st_size < max_size_bytes:
+        return
+    for i in range(backup_count - 1, 0, -1):
+        old_p = Path(f"{path!s}.{i}")
+        new_p = Path(f"{path!s}.{i + 1}")
+        if old_p.exists():
+            if new_p.exists():
+                new_p.unlink()
+            shutil.move(str(old_p), str(new_p))
+    if Path(f"{path!s}.1").exists():
+        Path(f"{path!s}.1").unlink()
+    shutil.move(str(path), f"{path!s}.1")
 
 
 def version_callback(value: Optional[bool]) -> None:
@@ -525,6 +555,16 @@ def scan_all(
         "--daemon",
         help="Run continuously and update correlation in real time",
     ),
+    max_log_size: int = typer.Option(
+        50,
+        "--max-log-size",
+        help="Rotate layer2/layer3 output files when they exceed this size in MB",
+    ),
+    max_log_backups: int = typer.Option(
+        5,
+        "--max-log-backups",
+        help="Number of rotated backup files to keep for layer2/layer3",
+    ),
 ):
     """
     Run a full 4-layer AI agent scan and correlate all findings.
@@ -573,6 +613,8 @@ def scan_all(
     findings_lock = threading.Lock()
 
     stop_event = threading.Event()
+    # Daemon-only: set to True when disk is critically low to pause Layer 3 logging
+    pause_layer3_logging = [False]
 
     def run_layer1_once() -> None:
         nonlocal code_findings
@@ -585,11 +627,14 @@ def scan_all(
             from agent_discover_scanner.correlator import CorrelationEngine as _CE
 
             new_findings = _CE.load_code_findings(layer1_sarif)
-            with findings_lock:
-                code_findings = new_findings
-            console.print(f"[cyan]Layer 1 findings loaded: {len(code_findings)}[/cyan]\n")
+            if not daemon:
+                with findings_lock:
+                    code_findings = new_findings
+            console.print(f"[cyan]Layer 1 findings loaded: {len(new_findings)}[/cyan]\n")
         except Exception as e:
             console.print(f"[red]Layer 1 scan failed:[/red] {e}")
+
+    max_log_size_bytes = max_log_size * 1024 * 1024
 
     def run_layer2_once() -> None:
         nonlocal network_findings
@@ -600,8 +645,6 @@ def scan_all(
         try:
             net_monitor = NetworkMonitor()
             summary = net_monitor.monitor(duration_seconds=duration)
-            layer2_json.write_text(json.dumps(summary, indent=2))
-
             providers = getattr(CorrelationEngine, "_PROVIDERS", set())
             nf = []
             for conn in summary.get("connections", []):
@@ -621,10 +664,14 @@ def scan_all(
                         "timestamp": conn.get("timestamp"),
                     }
                 )
-            with findings_lock:
-                network_findings = nf
+            summary_with_findings = {**summary, "findings": nf}
+            _rotate_file_if_needed(layer2_json, max_log_size_bytes, max_log_backups)
+            layer2_json.write_text(json.dumps(summary_with_findings, indent=2))
+            if not daemon:
+                with findings_lock:
+                    network_findings = nf
             console.print(
-                f"[cyan]Layer 2 connections contributing to correlation: {len(network_findings)}[/cyan]\n"
+                f"[cyan]Layer 2 connections contributing to correlation: {len(nf)}[/cyan]\n"
             )
         except ImportError:
             console.print("[red]psutil not installed; skipping Layer 2 network discovery[/red]")
@@ -641,8 +688,9 @@ def scan_all(
             try:
                 validated = validate_file_exists(str(layer3_file), "Layer 3 findings file")
                 new_findings = CorrelationEngine.load_layer3_findings(validated)
-                with findings_lock:
-                    layer3_findings = new_findings
+                if not daemon:
+                    with findings_lock:
+                        layer3_findings = new_findings
                 console.print(
                     f"[cyan]Loaded existing Layer 3 findings from {validated}[/cyan]\n"
                 )
@@ -656,7 +704,11 @@ def scan_all(
                     "[yellow]kubectl not found; skipping live Layer 3 Kubernetes monitoring[/yellow]"
                 )
                 return
+            if daemon and pause_layer3_logging[0]:
+                logger.warning("Layer 3 logging paused due to low disk space")
+                return
             try:
+                _rotate_file_if_needed(layer3_jsonl, max_log_size_bytes, max_log_backups)
                 run_monitor_k8s(
                     namespace="kube-system",
                     duration=duration,
@@ -664,10 +716,11 @@ def scan_all(
                     output_format="jsonl",
                 )
                 new_findings = CorrelationEngine.load_layer3_findings(layer3_jsonl)
-                with findings_lock:
-                    layer3_findings = new_findings
+                if not daemon:
+                    with findings_lock:
+                        layer3_findings = new_findings
                 console.print(
-                    f"[cyan]Layer 3 findings loaded: {len(layer3_findings)}[/cyan]\n"
+                    f"[cyan]Layer 3 findings loaded: {len(new_findings)}[/cyan]\n"
                 )
             except FileNotFoundError:
                 console.print(
@@ -708,20 +761,28 @@ def scan_all(
 
             layer4_json.write_text(json.dumps({"data": flat_rows}, indent=2))
             new_findings = CorrelationEngine.load_layer4_findings(layer4_json)
-            with findings_lock:
-                layer4_findings = new_findings
+            if not daemon:
+                with findings_lock:
+                    layer4_findings = new_findings
             console.print(
-                f"[cyan]Layer 4 endpoint findings contributing to correlation: {len(layer4_findings)}[/cyan]\n"
+                f"[cyan]Layer 4 endpoint findings contributing to correlation: {len(new_findings)}[/cyan]\n"
             )
         except Exception as e:
             console.print(f"[red]Layer 4 endpoint scan failed:[/red] {e}")
 
     def run_correlation_once() -> dict:
-        with findings_lock:
-            cf = list(code_findings)
-            nf = list(network_findings)
-            l3 = list(layer3_findings)
-            l4 = list(layer4_findings)
+        if daemon:
+            # Load from files each cycle to avoid accumulating findings in memory
+            cf = CorrelationEngine.load_code_findings(layer1_sarif) if layer1_sarif.exists() else []
+            nf = CorrelationEngine.load_network_findings(layer2_json)
+            l3 = CorrelationEngine.load_layer3_findings(layer3_jsonl) if layer3_jsonl.exists() else []
+            l4 = CorrelationEngine.load_layer4_findings(layer4_json) if layer4_json.exists() else []
+        else:
+            with findings_lock:
+                cf = list(code_findings)
+                nf = list(network_findings)
+                l3 = list(layer3_findings)
+                l4 = list(layer4_findings)
         console.print("[bold cyan]Running correlation across all available layers...[/bold cyan]\n")
         inventory = CorrelationEngine.correlate(
             code_findings=cf,
@@ -759,68 +820,200 @@ def scan_all(
             # Signal handling may not be available in some environments (e.g. Windows)
             pass
 
-        def layer1_daemon():
-            # Try to use watchdog if available for faster updates, otherwise poll every 5 minutes
+        # Daemon log rotation: all daemon output to a rotating file (20MB, 3 backups)
+        daemon_log_path = output_dir / "daemon.log"
+        daemon_log_handler = RotatingFileHandler(
+            daemon_log_path,
+            maxBytes=_DAEMON_LOG_MAX_BYTES,
+            backupCount=_DAEMON_LOG_BACKUP_COUNT,
+            encoding="utf-8",
+        )
+        daemon_log_handler.setFormatter(
+            logging.Formatter("%(asctime)s %(levelname)s [%(name)s] %(message)s")
+        )
+        logger.addHandler(daemon_log_handler)
+        logger.setLevel(logging.INFO)
+
+        def _check_disk_and_maybe_pause() -> None:
             try:
-                from watchdog.events import FileSystemEventHandler
-                from watchdog.observers import Observer
+                free = shutil.disk_usage(output_dir).free
+                if free < _DAEMON_DISK_CRITICAL_BYTES:
+                    pause_layer3_logging[0] = True
+                    logger.warning(
+                        "Low disk space: %.0fMB remaining; pausing Layer 3 logging",
+                        free / 1024 / 1024,
+                    )
+                elif free < _DAEMON_DISK_WARN_BYTES:
+                    logger.warning(
+                        "Low disk space: %.0fMB remaining",
+                        free / 1024 / 1024,
+                    )
+                elif free > _DAEMON_DISK_RESUME_BYTES:
+                    pause_layer3_logging[0] = False
+            except Exception as e:
+                logger.exception("Disk check failed: %s", e)
 
-                class ChangeHandler(FileSystemEventHandler):
-                    def on_any_event(self, event):
-                        if stop_event.is_set():
-                            return
-                        run_layer1_once()
+        _check_disk_and_maybe_pause()  # at startup
 
-                observer = Observer()
-                handler = ChangeHandler()
-                observer.schedule(handler, str(scan_root), recursive=True)
-                observer.start()
-                try:
-                    while not stop_event.is_set():
-                        time.sleep(1)
-                finally:
-                    observer.stop()
-                    observer.join()
-            except ImportError:
-                # Fallback: periodic rescan every 5 minutes
+        def disk_check_daemon() -> None:
+            while not stop_event.is_set():
+                if stop_event.wait(3600):  # wait 1 hour or until stop
+                    break
+                _check_disk_and_maybe_pause()
+
+        disk_check_thread = threading.Thread(
+            target=disk_check_daemon, name="disk-check-daemon", daemon=True
+        )
+        disk_check_thread.start()
+
+        def layer1_daemon():
+            backoff_sec = _DAEMON_BACKOFF_INITIAL_SEC
+            try:
                 while not stop_event.is_set():
-                    run_layer1_once()
-                    stop_event.wait(300)
+                    try:
+                        # Try to use watchdog if available for faster updates, otherwise poll every 5 minutes
+                        try:
+                            from watchdog.events import FileSystemEventHandler
+                            from watchdog.observers import Observer
+
+                            class ChangeHandler(FileSystemEventHandler):
+                                def on_any_event(self, event):
+                                    if stop_event.is_set():
+                                        return
+                                    run_layer1_once()
+
+                            observer = Observer()
+                            handler = ChangeHandler()
+                            observer.schedule(handler, str(scan_root), recursive=True)
+                            observer.start()
+                            try:
+                                while not stop_event.is_set():
+                                    time.sleep(1)
+                            finally:
+                                observer.stop()
+                                observer.join()
+                        except ImportError:
+                            # Fallback: periodic rescan every 5 minutes
+                            while not stop_event.is_set():
+                                run_layer1_once()
+                                if stop_event.wait(300):
+                                    break
+                        backoff_sec = _DAEMON_BACKOFF_INITIAL_SEC
+                    except Exception as e:
+                        logger.exception(
+                            "Layer 1 daemon error (will retry in %ss): %s",
+                            backoff_sec,
+                            e,
+                            exc_info=True,
+                        )
+                        if stop_event.wait(backoff_sec):
+                            break
+                        backoff_sec = min(backoff_sec * 2, _DAEMON_BACKOFF_MAX_SEC)
+            except Exception as e:
+                logger.exception("Layer 1 daemon crashed: %s", e, exc_info=True)
 
         def layer2_daemon():
-            while not stop_event.is_set():
-                run_layer2_once()
-                if stop_event.wait(duration):
-                    break
+            backoff_sec = _DAEMON_BACKOFF_INITIAL_SEC
+            try:
+                while not stop_event.is_set():
+                    try:
+                        run_layer2_once()
+                        backoff_sec = _DAEMON_BACKOFF_INITIAL_SEC
+                    except Exception as e:
+                        logger.exception(
+                            "Layer 2 daemon error (will retry in %ss): %s",
+                            backoff_sec,
+                            e,
+                            exc_info=True,
+                        )
+                        if stop_event.wait(backoff_sec):
+                            break
+                        backoff_sec = min(backoff_sec * 2, _DAEMON_BACKOFF_MAX_SEC)
+                        continue
+                    if stop_event.wait(duration):
+                        break
+            except Exception as e:
+                logger.exception("Layer 2 daemon crashed: %s", e, exc_info=True)
 
         def layer3_daemon():
-            while not stop_event.is_set():
-                run_layer3_once()
-                if stop_event.wait(duration):
-                    break
+            backoff_sec = _DAEMON_BACKOFF_INITIAL_SEC
+            try:
+                while not stop_event.is_set():
+                    try:
+                        run_layer3_once()
+                        backoff_sec = _DAEMON_BACKOFF_INITIAL_SEC
+                    except Exception as e:
+                        logger.exception(
+                            "Layer 3 daemon error (will retry in %ss): %s",
+                            backoff_sec,
+                            e,
+                            exc_info=True,
+                        )
+                        if stop_event.wait(backoff_sec):
+                            break
+                        backoff_sec = min(backoff_sec * 2, _DAEMON_BACKOFF_MAX_SEC)
+                        continue
+                    if stop_event.wait(duration):
+                        break
+            except Exception as e:
+                logger.exception("Layer 3 daemon crashed: %s", e, exc_info=True)
 
         def layer4_daemon():
-            while not stop_event.is_set():
-                run_layer4_once()
-                if stop_event.wait(60):
-                    break
+            backoff_sec = _DAEMON_BACKOFF_INITIAL_SEC
+            try:
+                while not stop_event.is_set():
+                    try:
+                        run_layer4_once()
+                        backoff_sec = _DAEMON_BACKOFF_INITIAL_SEC
+                    except Exception as e:
+                        logger.exception(
+                            "Layer 4 daemon error (will retry in %ss): %s",
+                            backoff_sec,
+                            e,
+                            exc_info=True,
+                        )
+                        if stop_event.wait(backoff_sec):
+                            break
+                        backoff_sec = min(backoff_sec * 2, _DAEMON_BACKOFF_MAX_SEC)
+                        continue
+                    if stop_event.wait(60):
+                        break
+            except Exception as e:
+                logger.exception("Layer 4 daemon crashed: %s", e, exc_info=True)
 
         def correlation_daemon():
             last_report_json = None
-            while not stop_event.is_set():
-                report_local = run_correlation_once()
-                if format == "json":
-                    current_json = json.dumps(report_local, sort_keys=True)
-                else:
-                    current_json = None
+            backoff_sec = _DAEMON_BACKOFF_INITIAL_SEC
+            try:
+                while not stop_event.is_set():
+                    try:
+                        report_local = run_correlation_once()
+                        if format == "json":
+                            current_json = json.dumps(report_local, sort_keys=True)
+                        else:
+                            current_json = None
 
-                # Only print full JSON if user requested; file is always written by run_correlation_once
-                if format == "json" and current_json != last_report_json:
-                    console.print(current_json)
-                    last_report_json = current_json
+                        # Only print full JSON if user requested; file is always written by run_correlation_once
+                        if format == "json" and current_json != last_report_json:
+                            console.print(current_json)
+                            last_report_json = current_json
 
-                if stop_event.wait(30):
-                    break
+                        backoff_sec = _DAEMON_BACKOFF_INITIAL_SEC
+                    except Exception as e:
+                        logger.exception(
+                            "Correlation daemon error (will retry in %ss): %s",
+                            backoff_sec,
+                            e,
+                            exc_info=True,
+                        )
+                        if stop_event.wait(backoff_sec):
+                            break
+                        backoff_sec = min(backoff_sec * 2, _DAEMON_BACKOFF_MAX_SEC)
+                        continue
+                    if stop_event.wait(30):
+                        break
+            except Exception as e:
+                logger.exception("Correlation daemon crashed: %s", e, exc_info=True)
 
         threads = [
             threading.Thread(target=layer1_daemon, name="layer1-daemon", daemon=True),
@@ -842,6 +1035,9 @@ def scan_all(
         finally:
             # Give threads a moment to shut down gracefully
             time.sleep(2)
+            if daemon_log_handler:
+                logger.removeHandler(daemon_log_handler)
+                daemon_log_handler.close()
         # After daemon shutdown, print one final summary
         report = run_correlation_once()
 

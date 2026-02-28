@@ -59,14 +59,27 @@ class TetragonMonitor:
         file_handle = None
 
         if tetragon_export_file:
-            # Production path: tail Tetragon export file directly (no API server load)
+            # Production path: tail Tetragon export file with persistent position tracker
             path = Path(tetragon_export_file)
+            pos_path = path.parent / (path.name + ".pos")
             if not path.exists():
                 console.print(f"[red]Error: Tetragon export file not found: {path}[/red]")
                 raise FileNotFoundError(f"Tetragon export file not found: {path}")
+
+            def _open_and_seek():
+                f = open(path, "r", encoding="utf-8", errors="replace")
+                if pos_path.exists():
+                    try:
+                        offset = int(pos_path.read_text().strip())
+                        f.seek(offset)
+                    except (ValueError, OSError):
+                        f.seek(0, os.SEEK_END)
+                else:
+                    f.seek(0, os.SEEK_END)  # daemon: only process new events
+                return f
+
             try:
-                file_handle = open(path, "r")
-                file_handle.seek(0, os.SEEK_END)
+                file_handle = _open_and_seek()
             except OSError as e:
                 console.print(f"[red]Error: Cannot open Tetragon export file: {e}[/red]")
                 raise
@@ -74,9 +87,42 @@ class TetragonMonitor:
                 while True:
                     if stop_event and stop_event.is_set():
                         break
+                    # Detect rotation: path now points to a different inode (Tetragon rotated the log)
+                    try:
+                        if path.exists():
+                            our_ino = os.fstat(file_handle.fileno()).st_ino
+                            path_ino = path.stat().st_ino
+                            if our_ino != path_ino:
+                                file_handle.close()
+                                try:
+                                    pos_path.unlink(missing_ok=True)
+                                except OSError:
+                                    pass
+                                file_handle = _open_and_seek()
+                                file_handle.seek(0)
+                    except FileNotFoundError:
+                        pos_path.unlink(missing_ok=True)
+                        raise
+                    except OSError:
+                        pass  # e.g. Windows or stat failure; continue tailing
+
                     ready, _, _ = select.select([file_handle], [], [], 1.0)
                     if ready:
-                        line = file_handle.readline()
+                        try:
+                            line = file_handle.readline()
+                        except OSError:
+                            # File may have been rotated under our feet
+                            try:
+                                file_handle.close()
+                            except Exception:
+                                pass
+                            try:
+                                pos_path.unlink(missing_ok=True)
+                            except OSError:
+                                pass
+                            file_handle = _open_and_seek()
+                            file_handle.seek(0)
+                            continue
                         if not line:
                             continue
                         line = line.strip()
@@ -87,6 +133,11 @@ class TetragonMonitor:
                             event = parse_tetragon_event(raw_event)
                             if event and event.sock_arg:
                                 yield event
+                                # Persist position after every event so we never reprocess across cycles/restarts
+                                try:
+                                    pos_path.write_text(str(file_handle.tell()))
+                                except OSError:
+                                    pass
                         except json.JSONDecodeError:
                             continue
                         except Exception as e:
@@ -99,6 +150,10 @@ class TetragonMonitor:
             finally:
                 if file_handle is not None:
                     try:
+                        try:
+                            pos_path.write_text(str(file_handle.tell()))
+                        except OSError:
+                            pass
                         file_handle.close()
                     except Exception:
                         pass

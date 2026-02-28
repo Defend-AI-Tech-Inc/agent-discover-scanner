@@ -425,6 +425,22 @@ class CorrelationEngine:
     )
 
     @classmethod
+    def _workload_matches_finding(cls, workload: str, finding: Dict) -> bool:
+        """Return True if workload name fuzzy-matches the code finding's framework (rule)."""
+        workload_lower = (workload or "").lower()
+        framework_keywords = {
+            "DAI001": ["autogen"],
+            "DAI002": ["crewai", "crew"],
+            "DAI003": ["langchain", "langgraph"],
+            "DAI004": ["openai", "anthropic", "shadow"],
+            "DAI005": ["http", "client"],
+            "DAI006": ["api"],
+        }
+        rule_id = finding.get("rule_id", "")
+        keywords = framework_keywords.get(rule_id, [])
+        return any(kw in workload_lower for kw in keywords)
+
+    @classmethod
     def _code_finding_providers(cls, cf: Dict) -> List[str]:
         """Return list of provider names that may match this code finding."""
         message = (cf.get("message") or "").lower()
@@ -498,6 +514,9 @@ class CorrelationEngine:
             if p not in layer4_by_provider and (p in cls._PROVIDERS or p != "unknown"):
                 layer4_by_provider[p] = l4
 
+        # Track which Layer 3 findings were matched to a code finding (for GHOST: unmatched = ghost)
+        matched_l3_keys: set = set()  # (namespace, pod) tuples
+
         # Process code findings (Layer 1)
         for cf in code_findings:
             agent_id = f"{cf['file_path']}:{cf['line']}"
@@ -513,6 +532,7 @@ class CorrelationEngine:
 
             detection_layers = ["layer1"]
             match_provider = None
+            matched_l3: Optional[Dict] = None
 
             possible = cls._code_finding_providers(cf)
 
@@ -523,13 +543,25 @@ class CorrelationEngine:
                         detection_layers.append("layer2")
                         break
 
-            if layer3_findings and not any(l.startswith("layer3") for l in detection_layers):
+            # Layer 3: first try provider match; if provider is "unknown", try workload name matching
+            if layer3_findings and "layer3" not in detection_layers:
                 for p in possible:
                     if p in layer3_by_provider:
                         match_provider = match_provider or p
-                        if "layer3" not in detection_layers:
-                            detection_layers.append("layer3")
+                        matched_l3 = layer3_by_provider[p]
+                        matched_l3_keys.add((matched_l3.get("namespace") or "", matched_l3.get("pod") or ""))
+                        detection_layers.append("layer3")
                         break
+                if "layer3" not in detection_layers:
+                    for l3 in layer3_findings:
+                        workload_str = (l3.get("workload") or l3.get("pod") or "")
+                        if workload_str and cls._workload_matches_finding(workload_str, cf):
+                            matched_l3 = l3
+                            matched_l3_keys.add((l3.get("namespace") or "", l3.get("pod") or ""))
+                            detection_layers.append("layer3")
+                            if match_provider is None:
+                                match_provider = (l3.get("provider") or "").lower() or None
+                            break
 
             if layer4_findings and "layer4" not in detection_layers:
                 for p in possible:
@@ -557,14 +589,22 @@ class CorrelationEngine:
                     last_seen = info.get("timestamp")
                     process_name = info.get("process")
                 network_provider = match_provider
-                if match_provider in layer3_by_provider:
-                    l3 = layer3_by_provider[match_provider]
-                    k8s_pod = l3.get("pod")
-                    k8s_namespace = l3.get("namespace")
-                    k8s_workload = l3.get("workload")
-                    if last_seen is None:
-                        last_seen = l3.get("timestamp")
-                if match_provider in layer4_by_provider:
+            if matched_l3 is not None:
+                k8s_pod = matched_l3.get("pod")
+                k8s_namespace = matched_l3.get("namespace")
+                k8s_workload = matched_l3.get("workload")
+                if last_seen is None:
+                    last_seen = matched_l3.get("timestamp")
+                if network_provider is None:
+                    network_provider = matched_l3.get("provider")
+            elif match_provider and match_provider in layer3_by_provider:
+                l3 = layer3_by_provider[match_provider]
+                k8s_pod = l3.get("pod")
+                k8s_namespace = l3.get("namespace")
+                k8s_workload = l3.get("workload")
+                if last_seen is None:
+                    last_seen = l3.get("timestamp")
+            if match_provider and match_provider in layer4_by_provider:
                     l4 = layer4_by_provider[match_provider]
                     endpoint_process = l4.get("process_name")
                     endpoint_pid = l4.get("pid")
@@ -615,10 +655,12 @@ class CorrelationEngine:
                 )
             )
 
-        for provider, l3 in layer3_by_provider.items():
-            if provider in seen_providers:
+        # Layer 3 GHOST: any pod/workload with no matching Layer 1 code finding (regardless of provider)
+        for l3 in layer3_findings:
+            key = (l3.get("namespace") or "", l3.get("pod") or "")
+            if key in matched_l3_keys:
                 continue
-            seen_providers.add(provider)
+            provider = (l3.get("provider") or "unknown").lower()
             ghost_id = f"ghost:{provider}:{l3.get('pod', '')}"
             inventory["ghost"].append(
                 AgentInventoryItem(

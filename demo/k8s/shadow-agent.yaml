@@ -22,20 +22,26 @@ spec:
         command: ["/bin/sh", "-c"]
         args:
         - |
-          python3 -c "
+            cat > /tmp/agent.py << 'PYEOF'
           import urllib.request, time, json
           while True:
               try:
+                  data = json.dumps({
+                      'model': 'gpt-3.5-turbo',
+                      'messages': [{'role': 'user', 'content': 'ping'}]
+                  }).encode()
                   req = urllib.request.Request(
                       'https://api.openai.com/v1/chat/completions',
-                      headers={'Authorization': 'Bearer demo-key',
-                               'Content-Type': 'application/json'},
-                      data=json.dumps({'model':'gpt-3.5-turbo',
-                        'messages':[{'role':'user','content':'ping'}]}).encode()
+                      data=data,
+                      headers={
+                          'Authorization': 'Bearer demo-key',
+                          'Content-Type': 'application/json'
+                      }
                   )
                   r = urllib.request.urlopen(req, timeout=10)
-                  print(f'Called OpenAI: {r.status}')
+                  print(f'Called OpenAI: {r.status}', flush=True)
               except Exception as e:
-                  print(f'Connection attempt (expected): {type(e).__name__}')
+                  print(f'Connection attempt (expected): {type(e).__name__}', flush=True)
               time.sleep(45)
-          "
+          PYEOF
+            python3 /tmp/agent.py

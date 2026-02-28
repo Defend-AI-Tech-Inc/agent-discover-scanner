@@ -173,6 +173,17 @@ class CorrelationEngine:
         return None
 
     @classmethod
+    def _infer_provider_from_ip(cls, daddr: str) -> Optional[str]:
+        """Infer LLM provider from destination IP (reverse DNS then hostname match)."""
+        if not daddr or daddr == "<nil>":
+            return None
+        try:
+            hostname, _, _ = socket.gethostbyaddr(daddr)
+            return cls._infer_provider_from_address(hostname or "")
+        except (socket.herror, socket.gaierror, OSError):
+            return cls._infer_provider_from_address(daddr)
+
+    @classmethod
     def load_layer4_findings(cls, layer4_path: Path) -> List[Dict]:
         """
         Read osquery JSON output; return list of dicts with process_name, pid,
@@ -292,12 +303,14 @@ class CorrelationEngine:
     def load_layer3_findings(cls, layer3_path: Path) -> List[Dict]:
         """
         Read Tetragon/monitor-k8s JSONL output; return list of dicts with
-        pod, namespace, workload, provider, timestamp.
+        pod, namespace, workload, provider, timestamp. Supports process_tracepoint
+        (inet_sock_set_state) and legacy process/processK8s shapes. Deduplicates
+        by pod (namespace/name) keeping the most recent timestamp.
         """
         if not layer3_path.exists():
             return []
 
-        results = []
+        results: List[Dict] = []
         try:
             with open(layer3_path, "r") as f:
                 for line in f:
@@ -305,47 +318,82 @@ class CorrelationEngine:
                     if not line:
                         continue
                     try:
-                        obj = json.loads(line)
+                        event = json.loads(line)
                     except json.JSONDecodeError:
                         continue
 
-                    # Tetragon process/connect events: nested process, processK8s, etc.
-                    process = obj.get("process", {}) or {}
-                    process_k8s = process.get("pod", {}) or obj.get("processK8s", {}) or {}
-                    pod = namespace = workload = ""
-                    if isinstance(process_k8s, dict):
-                        pod = process_k8s.get("pod") or process_k8s.get("name") or ""
-                        namespace = process_k8s.get("namespace") or ""
-                        workload = process_k8s.get("workload") or ""
-                        if not workload and isinstance(process_k8s.get("container"), dict):
-                            workload = process_k8s["container"].get("name") or ""
+                    finding = None
 
-                    # Prefer top-level if present
-                    pod = obj.get("pod") or pod
-                    namespace = obj.get("namespace") or namespace
-                    workload = obj.get("workload") or workload
+                    # Tetragon process_tracepoint (e.g. inet_sock_set_state)
+                    tp = event.get("process_tracepoint") or {}
+                    if tp:
+                        process = tp.get("process") or {}
+                        pod_info = process.get("pod") or {}
+                        namespace = (pod_info.get("namespace") or "") if isinstance(pod_info, dict) else ""
+                        pod_name = (pod_info.get("name") or "") if isinstance(pod_info, dict) else ""
+                        if not namespace and not pod_name:
+                            continue
+                        timestamp = tp.get("time") or process.get("start_time") or ""
+                        args = tp.get("args") or []
+                        sock = (args[0].get("sock_arg") or {}) if args and isinstance(args[0], dict) else {}
+                        daddr = sock.get("daddr") if isinstance(sock, dict) else None
+                        provider = cls._infer_provider_from_ip(str(daddr or "")) if daddr else "unknown"
+                        workload = (pod_info.get("workload") or "") if isinstance(pod_info, dict) else ""
+                        if not workload and pod_name:
+                            parts = pod_name.rsplit("-", 2)
+                            workload = parts[0] if parts else pod_name
+                        binary = process.get("binary") if isinstance(process, dict) else ""
+                        finding = {
+                            "pod": pod_name,
+                            "namespace": namespace,
+                            "workload": workload,
+                            "provider": provider or "unknown",
+                            "timestamp": timestamp,
+                            "binary": binary,
+                        }
 
-                    # Infer provider from destination/URL in event if available
-                    dest = obj.get("destination") or obj.get("remote_address") or obj.get("url") or ""
-                    if isinstance(dest, dict):
-                        dest = dest.get("address") or dest.get("host") or ""
-                    provider = obj.get("provider") or cls._infer_provider_from_address(str(dest))
-
-                    timestamp = obj.get("time") or obj.get("timestamp") or process.get("start_time")
-
-                    results.append(
-                        {
+                    if finding is None:
+                        # Legacy: process/processK8s or monitor JSONL
+                        process = event.get("process") or {}
+                        process_k8s = process.get("pod") or event.get("processK8s") or {}
+                        pod = namespace = workload = ""
+                        if isinstance(process_k8s, dict):
+                            pod = process_k8s.get("pod") or process_k8s.get("name") or ""
+                            namespace = process_k8s.get("namespace") or ""
+                            workload = process_k8s.get("workload") or ""
+                            if not workload and isinstance(process_k8s.get("container"), dict):
+                                workload = process_k8s["container"].get("name") or ""
+                        pod = event.get("pod") or pod
+                        namespace = event.get("namespace") or namespace
+                        workload = event.get("workload") or workload
+                        dest = event.get("destination") or event.get("remote_address") or event.get("url") or ""
+                        if isinstance(dest, dict):
+                            dest = dest.get("address") or dest.get("host") or ""
+                        provider = event.get("provider") or cls._infer_provider_from_address(str(dest))
+                        timestamp = event.get("time") or event.get("timestamp") or process.get("start_time")
+                        finding = {
                             "pod": pod,
                             "namespace": namespace,
                             "workload": workload,
                             "provider": provider or "unknown",
                             "timestamp": timestamp,
                         }
-                    )
+
+                    if finding:
+                        results.append(finding)
         except OSError:
             return []
 
-        return results
+        # Deduplicate by (namespace, pod) keeping the most recent timestamp
+        by_pod: Dict[Tuple[str, str], Dict] = {}
+        for r in results:
+            key = (r.get("namespace") or "", r.get("pod") or "")
+            if not key[0] and not key[1]:
+                continue
+            existing = by_pod.get(key)
+            if existing is None or (r.get("timestamp") or "") > (existing.get("timestamp") or ""):
+                by_pod[key] = r
+        return list(by_pod.values())
 
     @classmethod
     def extract_framework_from_rule(cls, rule_id: str) -> str:

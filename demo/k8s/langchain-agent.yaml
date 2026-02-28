@@ -19,30 +19,12 @@ spec:
       containers:
       - name: langchain-agent
         image: python:3.12-slim
-        command: ["/bin/sh", "-c"]
-        args:
-        - |
-            cat > /tmp/agent.py << 'PYEOF'
-          import urllib.request, time, json
-          while True:
-              try:
-                  data = json.dumps({
-                      'model': 'gpt-3.5-turbo',
-                      'messages': [{'role': 'user', 'content': 'ping'}]
-                  }).encode()
-                  req = urllib.request.Request(
-                      'https://api.openai.com/v1/chat/completions',
-                      data=data,
-                      headers={
-                          'Authorization': 'Bearer demo-key',
-                          'Content-Type': 'application/json'
-                      }
-                  )
-                  r = urllib.request.urlopen(req, timeout=10)
-                  print(f'Called OpenAI: {r.status}', flush=True)
-              except Exception as e:
-                  print(f'Connection attempt (expected): {type(e).__name__}', flush=True)
-              time.sleep(30)
-          PYEOF
-            python3 /tmp/agent.py
+        command: ["python3", "/scripts/langchain-agent.py"]
+        volumeMounts:
+        - name: scripts
+          mountPath: /scripts
+      volumes:
+      - name: scripts
+        configMap:
+          name: agent-scripts
 

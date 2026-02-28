@@ -598,10 +598,10 @@ def scan_all(
     def is_skipped(layer_num: int) -> bool:
         return str(layer_num) in skip_set
 
-    # Output files
+    # Output files (layer3_jsonl is always in output_dir so correlation can read it)
     layer1_sarif = output_dir / "layer1_code.sarif"
     layer2_json = output_dir / "layer2_network.json"
-    layer3_jsonl = layer3_file or (output_dir / "layer3_k8s.jsonl")
+    layer3_jsonl = output_dir / "layer3_k8s.jsonl"
     layer4_json = output_dir / "layer4_endpoint.json"
     inventory_path = output_dir / "agent_inventory.json"
 
@@ -688,11 +688,15 @@ def scan_all(
             try:
                 validated = validate_file_exists(str(layer3_file), "Layer 3 findings file")
                 new_findings = CorrelationEngine.load_layer3_findings(validated)
+                # Write parsed findings to output_dir so correlation (and daemon) can read from layer3_jsonl
+                with open(layer3_jsonl, "w") as f:
+                    for finding in new_findings:
+                        f.write(json.dumps(finding) + "\n")
                 if not daemon:
                     with findings_lock:
                         layer3_findings = new_findings
                 console.print(
-                    f"[cyan]Loaded existing Layer 3 findings from {validated}[/cyan]\n"
+                    f"[cyan]Loaded Layer 3 findings from {validated} → {layer3_jsonl}[/cyan]\n"
                 )
             except ValidationError:
                 console.print("[red]Provided --layer3-file not found; skipping Layer 3[/red]")

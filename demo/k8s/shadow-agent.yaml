@@ -22,19 +22,20 @@ spec:
         command: ["/bin/sh", "-c"]
         args:
         - |
-          pip install httpx -q
           python3 -c "
-          import httpx, time
+          import urllib.request, time, json
           while True:
               try:
-                  r = httpx.post(
+                  req = urllib.request.Request(
                       'https://api.openai.com/v1/chat/completions',
-                      headers={'Authorization': 'Bearer demo-key'},
-                      json={'model':'gpt-3.5-turbo','messages':[{'role':'user','content':'ping'}]},
-                      timeout=10
+                      headers={'Authorization': 'Bearer demo-key',
+                               'Content-Type': 'application/json'},
+                      data=json.dumps({'model':'gpt-3.5-turbo',
+                        'messages':[{'role':'user','content':'ping'}]}).encode()
                   )
-                  print(f'Shadow agent called OpenAI: {r.status_code}')
+                  r = urllib.request.urlopen(req, timeout=10)
+                  print(f'Called OpenAI: {r.status}')
               except Exception as e:
-                  print(f'Shadow call (expected): {e}')
+                  print(f'Connection attempt (expected): {type(e).__name__}')
               time.sleep(45)
           "

@@ -22,26 +22,21 @@ spec:
         command: ["/bin/sh", "-c"]
         args:
         - |
-          pip install anthropic httpx -q
           python3 -c "
-          import httpx, time, os
-          api_key = os.environ.get('ANTHROPIC_API_KEY', 'demo-key')
+          import urllib.request, time, json
           while True:
               try:
-                  r = httpx.post(
+                  req = urllib.request.Request(
                       'https://api.anthropic.com/v1/messages',
-                      headers={
-                          'x-api-key': api_key,
-                          'anthropic-version': '2023-06-01'
-                      },
-                      json={'model':'claude-3-haiku-20240307','max_tokens':10,'messages':[{'role':'user','content':'ping'}]},
-                      timeout=10
+                      headers={'x-api-key': 'demo-key',
+                               'anthropic-version': '2023-06-01',
+                               'Content-Type': 'application/json'},
+                      data=json.dumps({'model':'claude-3-haiku-20240307','max_tokens':10,
+                        'messages':[{'role':'user','content':'ping'}]}).encode()
                   )
-                  print(f'CrewAI agent called Anthropic: {r.status_code}')
+                  r = urllib.request.urlopen(req, timeout=10)
+                  print(f'Called Anthropic: {r.status}')
               except Exception as e:
-                  print(f'Call failed (expected in demo): {e}')
+                  print(f'Connection attempt (expected): {type(e).__name__}')
               time.sleep(30)
           "
-        env:
-        - name: ANTHROPIC_API_KEY
-          value: "demo-key-not-real"

@@ -706,10 +706,16 @@ class CorrelationEngine:
 
     @classmethod
     def generate_report(
-        cls, inventory: Dict[str, List[AgentInventoryItem]], output_path: Optional[Path] = None
+        cls,
+        inventory: Dict[str, List[AgentInventoryItem]],
+        output_path: Optional[Path] = None,
+        previous_discovered_at: Optional[Dict[str, str]] = None,
     ) -> Dict:
         """
         Generate correlation report with statistics.
+
+        When previous_discovered_at is provided (e.g. daemon mode), preserves
+        discovered_at for known agent_ids instead of overwriting with current time.
 
         Returns:
             Report dictionary with metrics and inventory
@@ -721,8 +727,18 @@ class CorrelationEngine:
             key = ",".join(sorted(layers)) if layers else "none"
             detection_coverage[key] = detection_coverage.get(key, 0) + 1
 
+        now = datetime.now().isoformat()
+
+        def item_to_dict(item: AgentInventoryItem) -> dict:
+            d = asdict(item)
+            if previous_discovered_at is not None and item.agent_id in previous_discovered_at:
+                d["discovered_at"] = previous_discovered_at[item.agent_id]
+            elif not d.get("discovered_at"):
+                d["discovered_at"] = now
+            return d
+
         report = {
-            "generated_at": datetime.now().isoformat(),
+            "generated_at": now,
             "summary": {
                 "total_agents": sum(len(items) for items in inventory.values()),
                 "confirmed": len(inventory["confirmed"]),
@@ -738,7 +754,7 @@ class CorrelationEngine:
                 "low": sum(1 for item in all_items if item.risk_level == "low"),
             },
             "inventory": {
-                classification: [item.to_dict() for item in items]
+                classification: [item_to_dict(item) for item in items]
                 for classification, items in inventory.items()
             },
         }

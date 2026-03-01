@@ -778,7 +778,43 @@ def scan_all(
             layer4_findings=l4,
             layer3_findings=l3,
         )
-        return CorrelationEngine.generate_report(inventory, inventory_path)
+        # Daemon: preserve first-seen (discovered_at) from previous inventory
+        previous_discovered_at = None
+        if daemon and inventory_path.exists():
+            try:
+                prev = json.loads(inventory_path.read_text())
+                previous_discovered_at = {}
+                gen = prev.get("generated_at") or ""
+                for items in (prev.get("inventory") or {}).values():
+                    for item in items:
+                        aid = item.get("agent_id")
+                        if aid:
+                            previous_discovered_at[aid] = item.get("discovered_at") or gen
+            except (json.JSONDecodeError, OSError):
+                pass
+        report = CorrelationEngine.generate_report(
+            inventory, inventory_path, previous_discovered_at=previous_discovered_at
+        )
+        # Daemon: append one-line summary to history timeline
+        if daemon:
+            history_path = inventory_path.parent / "agent_inventory_history.jsonl"
+            try:
+                with open(history_path, "a") as f:
+                    f.write(
+                        json.dumps(
+                            {
+                                "timestamp": report["generated_at"],
+                                "confirmed": report["summary"]["confirmed"],
+                                "ghost": report["summary"]["ghost"],
+                                "unknown": report["summary"]["unknown"],
+                                "zombie": report["summary"].get("zombie", 0),
+                            }
+                        )
+                        + "\n"
+                    )
+            except OSError:
+                pass
+        return report
 
     # Non-daemon: run once with layers in parallel
     if not daemon:

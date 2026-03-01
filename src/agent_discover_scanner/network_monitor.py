@@ -277,8 +277,7 @@ class NetworkMonitor:
         Returns:
             Summary dict with all detected connections
         """
-        print(f"Monitoring AI connections for {duration_seconds} seconds...")
-        print(f"Checking every {interval_seconds} seconds\n")
+        print(f"   Observing runtime behavior ({duration_seconds}s)...")
         
         all_connections = []
         unique_connections = set()  # Track (process, service) pairs

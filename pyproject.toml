@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "agent-discover-scanner"
-version = "2.1.4"
+version = "2.1.5"
 description = "Discover and inventory autonomous AI agents across your infrastructure - static analysis, runtime detection, and Kubernetes monitoring"
 readme = "README.md"
 requires-python = ">=3.10"

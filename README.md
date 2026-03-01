@@ -14,7 +14,24 @@
 
 </div>
 
+> **Every enterprise is about to deploy AI systems that act autonomously.  
+> Who governs them once they start acting?**
+
+AgentDiscover Scanner is the open-source discovery and classification engine 
+for autonomous AI agents running inside your organization — across codebases, 
+live network traffic, and production Kubernetes clusters.
+
+Most enterprises think AI risk means employees pasting data into ChatGPT.  
+That's yesterday's problem.
+
+The real risk is **AI systems with API keys, database access, and tool 
+privileges acting independently** — without a human in the loop, without 
+a registry, without governance.
+
+AgentDiscover Scanner is Step 1: find everything that's running.
+
 ---
+
 
 ## 🎯 What It Does
 
@@ -28,6 +45,21 @@ AgentDiscover Scanner detects autonomous AI agents and Shadow AI in your codebas
 - 🤖 Framework Detection — AutoGen, CrewAI, LangChain, LangGraph support
 - 📦 Dependency Scanning — Analyze requirements.txt & package.json
 - 📊 SARIF Output — CI/CD integration ready
+
+## What It Finds
+
+| Classification | Meaning | Risk |
+|---|---|---|
+| ✅ CONFIRMED | Agent detected in code AND observed at runtime | High — actively executing |
+| 👻 GHOST | Agent observed at runtime with NO corresponding code | Critical — ungoverned execution |
+| ⚠️ UNKNOWN | Agent found in code but not yet observed at runtime | Medium — unverified |
+| ☠️ ZOMBIE | Agent in code with no recent runtime activity | Low — potentially deprecated |
+
+**GHOST agents are the most dangerous finding.** They represent autonomous 
+systems executing in your environment that your engineering team has no 
+record of — no code, no deployment, no ownership.
+
+---
 
 ## ✨ Features
 
@@ -68,6 +100,11 @@ This installer:
 - Handles sudo/root automatically
 - Works in Docker containers
 - Sets up all four detection layers
+
+```
+curl -fsSL https://raw.githubusercontent.com/Defend-AI-Tech-Inc/agent-discover-scanner/main/install.sh | sudo bash
+agent-discover-scanner scan-all /path/to/code --daemon --output /var/log/defendai
+```
 
 ### Manual Installation
 ```bash

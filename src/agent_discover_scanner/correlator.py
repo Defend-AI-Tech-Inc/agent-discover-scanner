@@ -655,13 +655,20 @@ class CorrelationEngine:
                 )
             )
 
-        # Layer 3 GHOST: any pod/workload with no matching Layer 1 code finding (regardless of provider)
+        # Layer 3 GHOST: any pod/workload with no matching Layer 1 code finding (regardless of provider).
+        # Deduplicate by workload name (not pod), keeping the most recent pod per workload.
+        workload_to_l3: Dict[Tuple[str, str], Dict] = {}  # (namespace, workload_or_pod) -> best l3 by timestamp
         for l3 in layer3_findings:
-            key = (l3.get("namespace") or "", l3.get("pod") or "")
-            if key in matched_l3_keys:
+            pod_key = (l3.get("namespace") or "", l3.get("pod") or "")
+            if pod_key in matched_l3_keys:
                 continue
+            workload_key = (l3.get("namespace") or "", (l3.get("workload") or l3.get("pod") or ""))
+            existing = workload_to_l3.get(workload_key)
+            if existing is None or (l3.get("timestamp") or "") > (existing.get("timestamp") or ""):
+                workload_to_l3[workload_key] = l3
+        for l3 in workload_to_l3.values():
             provider = (l3.get("provider") or "unknown").lower()
-            ghost_id = f"ghost:{provider}:{l3.get('pod', '')}"
+            ghost_id = f"ghost:{provider}:{l3.get('workload', l3.get('pod', ''))}"
             inventory["ghost"].append(
                 AgentInventoryItem(
                     agent_id=ghost_id,

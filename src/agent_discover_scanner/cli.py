@@ -108,7 +108,7 @@ def scan(
     """
     Scan source code for AI agents and Shadow AI patterns.
     """
-    console.print(f"[bold green]Starting scan on: {path}[/bold green]\n")
+    console.print(f"[bold green]📂 Analyzing source code at {path}[/bold green]\n")
 
     # Validate input
     try:
@@ -209,7 +209,6 @@ def scan(
         if format in ["sarif", "both"]:
             output_path = Path(output)
             SARIFGenerator.write_sarif(all_findings, scan_root, output_path)
-            console.print(f"\n[bold green]✓[/bold green] SARIF report written to: {output_path}")
 
         # Display summary table if requested
         if format in ["table", "both"]:
@@ -362,9 +361,8 @@ def monitor(
     """
     from agent_discover_scanner.network_monitor import NetworkMonitor
 
-    console.print(
-        f"[bold green]Starting network monitoring for {duration} seconds...[/bold green]\n"
-    )
+    console.print("[bold green]🌐 Monitoring live network connections...[/bold green]\n")
+    console.print(f"[cyan]   Observing runtime behavior ({duration}s)...[/cyan]\n")
     console.print("[cyan]Detecting connections to:[/cyan]")
     console.print("  • AI Services (OpenAI, Anthropic, Google AI, etc.)")
     console.print("  • Vector Databases (Pinecone, Weaviate, Qdrant, etc.)")
@@ -573,7 +571,7 @@ def scan_all(
     from agent_discover_scanner.network_monitor import NetworkMonitor
     from agent_discover_scanner.monitors import monitor_k8s as run_monitor_k8s
 
-    console.print("\n[bold cyan]Running full 4-layer AI agent scan...[/bold cyan]\n")
+    console.print("\n[bold cyan]🔍 Scanning for autonomous AI agents...[/bold cyan]\n")
 
     # Validate target path
     try:
@@ -621,7 +619,6 @@ def scan_all(
         if is_skipped(1):
             console.print("[yellow]Skipping Layer 1 (code discovery) per configuration[/yellow]")
             return
-        console.print("[bold green]Layer 1: Code discovery (static code scan)[/bold green]")
         try:
             scan(path=str(scan_root), output=str(layer1_sarif), format="sarif", verbose=False)
             from agent_discover_scanner.correlator import CorrelationEngine as _CE
@@ -630,7 +627,6 @@ def scan_all(
             if not daemon:
                 with findings_lock:
                     code_findings = new_findings
-            console.print(f"[cyan]Layer 1 findings loaded: {len(new_findings)}[/cyan]\n")
         except Exception as e:
             console.print(f"[red]Layer 1 scan failed:[/red] {e}")
 
@@ -641,7 +637,7 @@ def scan_all(
         if is_skipped(2):
             console.print("[yellow]Skipping Layer 2 (network discovery) per configuration[/yellow]")
             return
-        console.print("[bold green]Layer 2: Network discovery (runtime connections)[/bold green]")
+        console.print("[bold green]🌐 Monitoring live network connections...[/bold green]")
         try:
             net_monitor = NetworkMonitor()
             summary = net_monitor.monitor(duration_seconds=duration)
@@ -670,9 +666,6 @@ def scan_all(
             if not daemon:
                 with findings_lock:
                     network_findings = nf
-            console.print(
-                f"[cyan]Layer 2 connections contributing to correlation: {len(nf)}[/cyan]\n"
-            )
         except ImportError:
             console.print("[red]psutil not installed; skipping Layer 2 network discovery[/red]")
         except Exception as e:
@@ -683,7 +676,7 @@ def scan_all(
         if is_skipped(3):
             console.print("[yellow]Skipping Layer 3 (Kubernetes discovery) per configuration[/yellow]")
             return
-        console.print("[bold green]Layer 3: Kubernetes runtime discovery (Tetragon)[/bold green]")
+        console.print("[bold green]☸️  Monitoring Kubernetes workloads...[/bold green]")
         if layer3_file:
             try:
                 validated = validate_file_exists(str(layer3_file), "Layer 3 findings file")
@@ -695,9 +688,7 @@ def scan_all(
                 if not daemon:
                     with findings_lock:
                         layer3_findings = new_findings
-                console.print(
-                    f"[cyan]Loaded Layer 3 findings from {validated} → {layer3_jsonl}[/cyan]\n"
-                )
+                console.print("[cyan]   Runtime data loaded[/cyan]\n")
             except ValidationError:
                 console.print("[red]Provided --layer3-file not found; skipping Layer 3[/red]")
             except Exception as e:
@@ -723,9 +714,7 @@ def scan_all(
                 if not daemon:
                     with findings_lock:
                         layer3_findings = new_findings
-                console.print(
-                    f"[cyan]Layer 3 findings loaded: {len(new_findings)}[/cyan]\n"
-                )
+                console.print("[cyan]   Runtime data loaded[/cyan]\n")
             except FileNotFoundError:
                 console.print(
                     "[yellow]kubectl or Tetragon not available; skipping Layer 3[/yellow]"
@@ -738,7 +727,7 @@ def scan_all(
         if is_skipped(4):
             console.print("[yellow]Skipping Layer 4 (endpoint discovery) per configuration[/yellow]")
             return
-        console.print("[bold green]Layer 4: Endpoint discovery (osquery)[/bold green]")
+        console.print("[bold green]💻 Scanning endpoints...[/bold green]")
         try:
             subprocess.run(
                 ["osqueryi", "--version"],
@@ -747,9 +736,7 @@ def scan_all(
                 check=True,
             )
         except (subprocess.CalledProcessError, FileNotFoundError):
-            console.print(
-                "[yellow]osquery not installed or not available; skipping Layer 4[/yellow]"
-            )
+            console.print("[yellow]   Endpoint agent not installed — skipping[/yellow]")
             return
 
         try:
@@ -768,9 +755,6 @@ def scan_all(
             if not daemon:
                 with findings_lock:
                     layer4_findings = new_findings
-            console.print(
-                f"[cyan]Layer 4 endpoint findings contributing to correlation: {len(new_findings)}[/cyan]\n"
-            )
         except Exception as e:
             console.print(f"[red]Layer 4 endpoint scan failed:[/red] {e}")
 
@@ -787,7 +771,7 @@ def scan_all(
                 nf = list(network_findings)
                 l3 = list(layer3_findings)
                 l4 = list(layer4_findings)
-        console.print("[bold cyan]Running correlation across all available layers...[/bold cyan]\n")
+        console.print("[bold cyan]🔗 Correlating findings...[/bold cyan]\n")
         inventory = CorrelationEngine.correlate(
             code_findings=cf,
             network_findings=nf,
@@ -1046,7 +1030,7 @@ def scan_all(
         report = run_correlation_once()
 
     # Final summary table
-    console.print("\n[bold cyan]Correlation Summary[/bold cyan]\n")
+    console.print("\n[bold cyan]🤖 Autonomous Agent Inventory[/bold cyan]\n")
 
     summary_table = Table(show_header=True, header_style="bold magenta")
     summary_table.add_column("Classification", style="cyan")
@@ -1056,22 +1040,22 @@ def scan_all(
     summary_table.add_row(
         "CONFIRMED",
         str(report["summary"]["confirmed"]),
-        "Code + runtime evidence (one or more layers)",
+        "Active — detected in code and observed at runtime",
     )
     summary_table.add_row(
         "UNKNOWN",
         str(report["summary"]["unknown"]),
-        "Code only (no runtime evidence yet)",
+        "Code found — not yet observed at runtime",
     )
     summary_table.add_row(
         "ZOMBIE",
         str(report["summary"].get("zombie", 0)),
-        "Code but no recent activity (potentially deprecated)",
+        "Inactive — code exists but no recent runtime activity",
     )
     summary_table.add_row(
         "GHOST",
         f"[red]{report['summary']['ghost']}[/red]",
-        "[red]Runtime activity with no corresponding code (GHOST)[/red]",
+        "[red]⚠ Critical — runtime activity with no source code (ungoverned)[/red]",
     )
 
     console.print(summary_table)
@@ -1097,7 +1081,7 @@ def scan_all(
 
         console.print(cov_table)
 
-    console.print(f"\n[green]✓ Agent inventory saved to: {inventory_path}[/green]\n")
+    console.print(f"\n[green]✅ Scan complete — results saved to {output_dir}[/green]\n")
 
     if format == "json":
         console.print(json.dumps(report, indent=2))

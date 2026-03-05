@@ -133,7 +133,7 @@ class K8sAPIMonitor:
                 for fw in self._FRAMEWORK_KEYWORDS
             )
 
-            # Only record workloads that look AI-related (provider or framework hints)
+            # Emit only workloads with confirmed AI signals (image/env/args); skip all others
             if not provider and not has_framework:
                 continue
 

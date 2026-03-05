@@ -10,6 +10,10 @@ echo "===================================="
 echo "✓ Checking environment..."
 kubectl cluster-info &>/dev/null || { echo "❌ kubectl not connected. Run inside VM."; exit 1; }
 
+# Ensure kubernetes client available for scanner (pipx installs)
+echo "✓ Ensuring kubernetes client for agent-discover-scanner..."
+pipx inject agent-discover-scanner kubernetes 2>/dev/null || true
+
 # Install Tetragon
 echo "📦 Installing Tetragon..."
 helm repo add cilium https://helm.cilium.io 2>/dev/null || true

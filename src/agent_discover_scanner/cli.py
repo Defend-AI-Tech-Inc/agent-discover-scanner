@@ -678,78 +678,77 @@ def scan_all(
             console.print("[yellow]Skipping Layer 3 (Kubernetes discovery) per configuration[/yellow]")
             return
 
-        console.print("[bold green]Layer 3: Kubernetes API discovery[/bold green]")
-
-        # Base path: pure Kubernetes API discovery (respects KUBECONFIG)
-        api_findings: list[dict] = []
-        try:
-            api_monitor = K8sAPIMonitor()
-            api_findings = api_monitor.discover_agents()
-        except Exception as e:
-            console.print(f"[yellow]Kubernetes API discovery failed: {e}[/yellow]")
-
-        # If the user supplied an explicit Layer 3 file, load it and normalize into the JSONL we own
-        file_findings: list[dict] = []
+        # --layer3-file: bypass both Tetragon and K8s API, load directly
         if layer3_file:
             try:
                 validated = validate_file_exists(str(layer3_file), "Layer 3 findings file")
                 file_findings = CorrelationEngine.load_layer3_findings(validated)
+                _rotate_file_if_needed(layer3_jsonl, max_log_size_bytes, max_log_backups)
+                with open(layer3_jsonl, "w") as f:
+                    for finding in file_findings:
+                        f.write(json.dumps(finding) + "\n")
+                if not daemon:
+                    with findings_lock:
+                        layer3_findings = file_findings
+                console.print("[cyan]   Runtime data loaded[/cyan]\n")
             except ValidationError:
-                console.print("[red]Provided --layer3-file not found; skipping external Layer 3 file[/red]")
+                console.print("[red]Provided --layer3-file not found; skipping Layer 3[/red]")
             except Exception as e:
-                console.print(f"[red]Failed to load external Layer 3 findings:[/red] {e}")
+                console.print(f"[red]Failed to load Layer 3 findings:[/red] {e}")
+            return
 
-        # Always rotate Layer 3 log before writing a fresh view
+        # Try Tetragon/eBPF first (when kubectl available and not paused)
         _rotate_file_if_needed(layer3_jsonl, max_log_size_bytes, max_log_backups)
         try:
             with open(layer3_jsonl, "w") as f:
-                for finding in api_findings + file_findings:
-                    f.write(json.dumps(finding) + "\n")
-        except OSError as e:
-            console.print(f"[red]Failed to write Layer 3 findings: {e}[/red]")
+                pass  # truncate so Tetragon writes fresh
+        except OSError:
+            pass
 
-        # Enhancement path: Tetragon eBPF if available and no external file override
         tetragon_ok = False
-        if not layer3_file:
-            if shutil.which("kubectl") is None:
-                console.print(
-                    "[yellow]kubectl not found; skipping live Tetragon Layer 3 enhancement[/yellow]"
+        tetragon_findings: list = []
+        if shutil.which("kubectl") is not None and not (daemon and pause_layer3_logging[0]):
+            try:
+                run_monitor_k8s(
+                    namespace="kube-system",
+                    duration=duration,
+                    output_file=layer3_jsonl,
+                    output_format="jsonl",
                 )
-            elif daemon and pause_layer3_logging[0]:
-                logger.warning("Layer 3 logging paused due to low disk space")
-            else:
-                try:
-                    run_monitor_k8s(
-                        namespace="kube-system",
-                        duration=duration,
-                        output_file=layer3_jsonl,
-                        output_format="jsonl",
-                    )
+                tetragon_findings = CorrelationEngine.load_layer3_findings(layer3_jsonl)
+                if tetragon_findings:
                     tetragon_ok = True
-                except FileNotFoundError:
-                    console.print(
-                        "[yellow]kubectl or Tetragon not available; skipping eBPF enhancement[/yellow]"
-                    )
-                except Exception as e:
-                    console.print(f"[red]Layer 3 eBPF monitoring failed:[/red] {e}")
+            except FileNotFoundError:
+                pass
+            except Exception as e:
+                console.print(f"[yellow]Tetragon error: {e}[/yellow]")
 
-        # Load merged findings (API + optional Tetragon + optional external file) from JSONL
-        try:
+        if tetragon_ok:
+            new_findings = tetragon_findings
+            console.print("[bold green]Layer 3+: eBPF/Tetragon active (deep network visibility)[/bold green]")
+        else:
+            console.print("[yellow]Layer 3: Tetragon unavailable, falling back to Kubernetes API discovery[/yellow]")
+            console.print("[bold green]Layer 3: Kubernetes API discovery (install Tetragon for deeper visibility)[/bold green]")
+            api_findings: list = []
+            try:
+                api_monitor = K8sAPIMonitor()
+                api_findings = api_monitor.discover_agents()
+            except Exception as e:
+                console.print(f"[yellow]Kubernetes API discovery failed: {e}[/yellow]")
+            try:
+                with open(layer3_jsonl, "w") as f:
+                    for finding in api_findings:
+                        f.write(json.dumps(finding) + "\n")
+            except OSError as e:
+                console.print(f"[red]Failed to write Layer 3 findings: {e}[/red]")
             new_findings = CorrelationEngine.load_layer3_findings(layer3_jsonl)
-        except Exception as e:
-            console.print(f"[red]Failed to load Layer 3 findings:[/red] {e}")
-            new_findings = []
 
         if not daemon:
             with findings_lock:
                 layer3_findings = new_findings
-
         if new_findings:
             console.print("[cyan]   Runtime data loaded[/cyan]")
-        if tetragon_ok:
-            console.print("[cyan]Layer 3+: eBPF/Tetragon enhancement active[/cyan]\n")
-        else:
-            console.print("")
+        console.print("")
 
     def run_layer4_once() -> None:
         nonlocal layer4_findings

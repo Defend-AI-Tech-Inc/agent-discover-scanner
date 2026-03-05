@@ -36,6 +36,12 @@ spec:
       type: "int"
     - index: 2
       type: "int"
+    selectors:
+    - matchArgs:
+      - index: 2
+        operator: "Equal"
+        values:
+        - "1"
 EOF
 
 # Fix permissions

@@ -404,6 +404,8 @@ if [ "$INSTALL_LAYER_2" = true ] || [ "$INSTALL_LAYER_3" = true ]; then
 
     # Apply network monitoring TracingPolicy
     # Uses inet_sock_set_state tracepoint (stable across kernel versions including 6.x)
+    # Filters to state=1 (TCP_ESTABLISHED) so destination IPs are populated.
+    # state=0 (TCP_CLOSE) fires at socket init before IPs are set, producing nil addrs.
     echo "Applying Tetragon network TracingPolicy..."
     cat <<EOF | kubectl apply -f -
 apiVersion: cilium.io/v1alpha1
@@ -421,6 +423,12 @@ spec:
       type: "int"
     - index: 2
       type: "int"
+    selectors:
+    - matchArgs:
+      - index: 2
+        operator: "Equal"
+        values:
+        - "1"
 EOF
 
     # Verify policy applied

@@ -424,9 +424,31 @@ class CorrelationEngine:
         }
     )
 
+    # Layer 2/4 strict matching: only these process names can correlate with code findings (avoids false CONFIRMED from OneDrive/Mail/Notes/Zoom)
+    _KNOWN_AI_EXECUTORS = (
+        "python",
+        "python3",
+        "node",
+        "java",
+        "uvicorn",
+        "gunicorn",
+        "fastapi",
+        "celery",
+    )
+
+    @classmethod
+    def _is_known_executor(cls, process_name: str) -> bool:
+        """True if process_name is a known AI-capable executor (for Layer 2/4 strict matching)."""
+        if not process_name:
+            return False
+        pl = process_name.lower().strip()
+        return pl in cls._KNOWN_AI_EXECUTORS or any(
+            pl.startswith(ex) for ex in cls._KNOWN_AI_EXECUTORS
+        )
+
     @classmethod
     def _workload_matches_finding(cls, workload: str, finding: Dict) -> bool:
-        """Return True if workload name fuzzy-matches the code finding's framework (rule)."""
+        """Return True if workload name fuzzy-matches the code finding's framework (rule). Layer 3 (K8s) only."""
         workload_lower = (workload or "").lower()
         framework_keywords = {
             "DAI001": ["autogen"],
@@ -536,9 +558,12 @@ class CorrelationEngine:
 
             possible = cls._code_finding_providers(cf)
 
+            # Layer 2: strict matching — process_name must be a known AI executor (no fuzzy match)
             if network_findings:
                 for p in possible:
-                    if p in active_providers:
+                    if p in active_providers and cls._is_known_executor(
+                        active_providers[p].get("process") or ""
+                    ):
                         match_provider = p
                         detection_layers.append("layer2")
                         break
@@ -563,9 +588,12 @@ class CorrelationEngine:
                                 match_provider = (l3.get("provider") or "").lower() or None
                             break
 
+            # Layer 4: strict matching — process_name must be a known AI executor (no fuzzy match)
             if layer4_findings and "layer4" not in detection_layers:
                 for p in possible:
-                    if p in layer4_by_provider:
+                    if p in layer4_by_provider and cls._is_known_executor(
+                        layer4_by_provider[p].get("process_name") or ""
+                    ):
                         match_provider = match_provider or p
                         detection_layers.append("layer4")
                         break

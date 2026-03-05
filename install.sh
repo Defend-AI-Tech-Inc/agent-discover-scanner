@@ -367,7 +367,7 @@ if [ "$INSTALL_LAYER_4" = true ]; then
     fi
 fi
 
-# Step 7: Install Layers 2-3 dependencies (Tetragon standalone; no Cilium CNI)
+# Step 7: Install Layers 2-3 dependencies (Tetragon + Kubernetes API client)
 if [ "$INSTALL_LAYER_2" = true ] || [ "$INSTALL_LAYER_3" = true ]; then
     echo ""
     log_info "Installing Layers 2-3 dependencies (Tetragon)..."
@@ -378,6 +378,16 @@ if [ "$INSTALL_LAYER_2" = true ] || [ "$INSTALL_LAYER_3" = true ]; then
         exit 1
     fi
     
+    # Ensure kubernetes Python client is available for API-based discovery (respects KUBECONFIG)
+    if ! $PYTHON_CMD -m pip show kubernetes >/dev/null 2>&1; then
+        log_info "Installing kubernetes Python client for API-based discovery..."
+        if ! $PYTHON_CMD -m pip install kubernetes >/dev/null 2>&1; then
+            log_error "Failed to install kubernetes Python client"
+        else
+            log_success "kubernetes Python client installed"
+        fi
+    fi
+
     # Check if Tetragon is already installed (kubectl may exit 0 even when no pods exist)
     if kubectl get pods -n kube-system -l app.kubernetes.io/name=tetragon 2>/dev/null | grep -q Running; then
         log_success "Tetragon already installed"

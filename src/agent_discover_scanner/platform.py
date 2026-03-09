@@ -1,11 +1,15 @@
 import json
 import logging
 import os
+import socket
+from importlib import metadata as _metadata
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 from uuid import uuid4
 
 import certifi
+import getpass
+import platform as _platform
 
 logger = logging.getLogger(__name__)
 
@@ -215,10 +219,20 @@ def upload_scan_results(
     scan_id = str(uuid4())
     url = f"{resolved_wawsdb_url.rstrip('/')}/scanner/ingest"
 
+    scanner_context = {
+        "hostname": hostname,
+        "username": getpass.getuser(),
+        "os": f"{_platform.system()} {_platform.release()}",
+        "os_version": _platform.version(),
+        "ip": socket.gethostbyname(socket.gethostname()),
+        "scanner_version": _metadata.version("agent-discover-scanner"),
+    }
+
     payload = {
         "hostname": hostname,
         "scan_id": scan_id,
         "agents": agents,
+        "scanner_context": scanner_context,
     }
 
     headers = {

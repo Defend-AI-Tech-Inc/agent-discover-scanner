@@ -32,6 +32,7 @@ from agent_discover_scanner.sbom_analyzer import (
 from agent_discover_scanner.scanner import Scanner
 from agent_discover_scanner.signatures import SIGNATURE_REGISTRY
 from agent_discover_scanner.visitor import ContextAwareVisitor
+from agent_discover_scanner.platform import upload_scan_results
 
 #layer4 imports
 from agent_discover_scanner.layer4.osquery_executor import OsqueryExecutor
@@ -857,6 +858,10 @@ def scan_all(
             wait(futures)
 
         report = run_correlation_once()
+        try:
+            upload_scan_results(report, hostname=socket.gethostname())
+        except Exception:
+            logger.warning("DefendAI platform upload failed unexpectedly", exc_info=True)
     else:
         # Daemon mode: run layers continuously and update correlation
         console.print("[bold yellow]Daemon mode enabled: running continuous monitoring[/bold yellow]\n")
@@ -1090,8 +1095,12 @@ def scan_all(
             if daemon_log_handler:
                 logger.removeHandler(daemon_log_handler)
                 daemon_log_handler.close()
-        # After daemon shutdown, print one final summary
+        # After daemon shutdown, print one final summary and attempt upload once
         report = run_correlation_once()
+        try:
+            upload_scan_results(report, hostname=socket.gethostname())
+        except Exception:
+            logger.warning("DefendAI platform upload failed unexpectedly", exc_info=True)
 
     # Final summary table
     console.print("\n[bold cyan]🤖 Autonomous Agent Inventory[/bold cyan]\n")

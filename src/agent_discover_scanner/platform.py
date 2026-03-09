@@ -22,6 +22,11 @@ except ImportError:  # pragma: no cover
     yaml = None  # type: ignore[assignment]
 
 
+_SANDBOX_TENANT_TOKEN = "sandbox-token-001"
+_SANDBOX_API_KEY = "sandbox"
+_DEFAULT_WAWSDB_URL = "https://wauzeway.defendai.ai"
+
+
 def load_credentials() -> Optional[Dict[str, str]]:
     """
     Load DefendAI platform credentials from ~/.defendai/config.
@@ -141,24 +146,64 @@ def format_agents_for_upload(scan_results: Dict[str, Any]) -> List[Dict[str, Any
     return agents
 
 
-def upload_scan_results(scan_results: Dict[str, Any], hostname: str) -> bool:
+def upload_scan_results(
+    scan_results: Dict[str, Any],
+    hostname: str,
+    api_key: Optional[str] = None,
+    tenant_token: Optional[str] = None,
+    wawsdb_url: str = _DEFAULT_WAWSDB_URL,
+) -> bool:
     """
     Upload scan results to DefendAI platform.
 
+    Credential resolution:
+    - CLI arguments (api_key, tenant_token, wawsdb_url)
+    - ~/.defendai/config
+    - Built-in sandbox defaults
+
     Never raises; returns True on success, False otherwise.
     """
-    # httpx is optional; if missing, just log and return
+    # httpx is optional; if missing, just log and return with failure message
     if httpx is None:  # type: ignore[truthy-function]
+        reason = "httpx not installed"
         logger.warning("httpx not available; skipping DefendAI platform upload.")
+        print(f"⚠️ Platform upload failed: {reason} (scan still succeeded)")
         return False
 
-    creds = load_credentials()
-    if not creds:
-        print(
-            "💡 Connect to DefendAI platform: add api_key, tenant_token, "
-            "wawsdb_url to ~/.defendai/config to enable automatic upload"
-        )
-        return False
+    # Resolve credentials
+    source = "sandbox"
+    resolved_api_key = api_key
+    resolved_tenant_token = tenant_token
+    resolved_wawsdb_url = wawsdb_url or _DEFAULT_WAWSDB_URL
+
+    if resolved_api_key and resolved_tenant_token:
+        source = "cli"
+    else:
+        cfg = load_credentials()
+        if cfg:
+            # Only override from config when CLI values are missing
+            if not resolved_api_key:
+                resolved_api_key = cfg.get("api_key")
+            if not resolved_tenant_token:
+                resolved_tenant_token = cfg.get("tenant_token")
+            resolved_wawsdb_url = cfg.get("wawsdb_url") or resolved_wawsdb_url
+            if resolved_api_key and resolved_tenant_token:
+                source = "config"
+
+    if not resolved_api_key or not resolved_tenant_token:
+        # Fall back to sandbox defaults
+        resolved_api_key = _SANDBOX_API_KEY
+        resolved_tenant_token = _SANDBOX_TENANT_TOKEN
+        resolved_wawsdb_url = resolved_wawsdb_url or _DEFAULT_WAWSDB_URL
+        source = "sandbox"
+
+    # Announce which credential source is used
+    if source == "cli":
+        print("✓ Uploading to DefendAI platform...")
+    elif source == "config":
+        print("✓ Uploading to DefendAI platform (from ~/.defendai/config)...")
+    else:
+        print("💡 No credentials provided — uploading to DefendAI sandbox for preview")
 
     agents = format_agents_for_upload(scan_results)
     if not agents:
@@ -166,7 +211,7 @@ def upload_scan_results(scan_results: Dict[str, Any], hostname: str) -> bool:
         return True
 
     scan_id = str(uuid4())
-    url = f"{creds['wawsdb_url'].rstrip('/')}/scanner/ingest"
+    url = f"{resolved_wawsdb_url.rstrip('/')}/scanner/ingest"
 
     payload = {
         "hostname": hostname,
@@ -175,8 +220,8 @@ def upload_scan_results(scan_results: Dict[str, Any], hostname: str) -> bool:
     }
 
     headers = {
-        "X-DefendAI-Tenant-Token": creds["tenant_token"],
-        "Authorization": f"Bearer {creds['api_key']}",
+        "X-DefendAI-Tenant-Token": resolved_tenant_token,
+        "Authorization": f"Bearer {resolved_api_key}",
     }
 
     try:
@@ -184,16 +229,20 @@ def upload_scan_results(scan_results: Dict[str, Any], hostname: str) -> bool:
             response = client.post(url, json=payload, headers=headers)
 
         if 200 <= response.status_code < 300:
-            print(f"✓ Results uploaded to DefendAI platform (scan_id: {scan_id})")
+            print(f"✓ Results uploaded (scan_id: {scan_id})")
             return True
 
+        reason = f"HTTP {response.status_code}"
         logger.warning(
             "DefendAI platform upload failed with status %s: %s",
             response.status_code,
             response.text,
         )
+        print(f"⚠️ Platform upload failed: {reason} (scan still succeeded)")
         return False
-    except Exception as exc:
+    except Exception as exc:  # pragma: no cover - network failures are non-deterministic
+        reason = str(exc) or exc.__class__.__name__
         logger.warning("DefendAI platform upload error: %s", exc, exc_info=True)
+        print(f"⚠️ Platform upload failed: {reason} (scan still succeeded)")
         return False
 

@@ -565,6 +565,26 @@ def scan_all(
         "--max-log-backups",
         help="Number of rotated backup files to keep for layer2/layer3",
     ),
+    platform: bool = typer.Option(
+        False,
+        "--platform",
+        help="Upload results to DefendAI platform",
+    ),
+    api_key: Optional[str] = typer.Option(
+        None,
+        "--api-key",
+        help="DefendAI platform API key",
+    ),
+    tenant_token: Optional[str] = typer.Option(
+        None,
+        "--tenant-token",
+        help="DefendAI platform tenant token",
+    ),
+    wawsdb_url: str = typer.Option(
+        "https://wauzeway.defendai.ai",
+        "--wawsdb-url",
+        help="DefendAI platform base URL",
+    ),
 ):
     """
     Run a full 4-layer AI agent scan and correlate all findings.
@@ -858,10 +878,17 @@ def scan_all(
             wait(futures)
 
         report = run_correlation_once()
-        try:
-            upload_scan_results(report, hostname=socket.gethostname())
-        except Exception:
-            logger.warning("DefendAI platform upload failed unexpectedly", exc_info=True)
+        if platform:
+            try:
+                upload_scan_results(
+                    report,
+                    hostname=socket.gethostname(),
+                    api_key=api_key,
+                    tenant_token=tenant_token,
+                    wawsdb_url=wawsdb_url,
+                )
+            except Exception:
+                logger.warning("DefendAI platform upload failed unexpectedly", exc_info=True)
     else:
         # Daemon mode: run layers continuously and update correlation
         console.print("[bold yellow]Daemon mode enabled: running continuous monitoring[/bold yellow]\n")
@@ -1095,12 +1122,19 @@ def scan_all(
             if daemon_log_handler:
                 logger.removeHandler(daemon_log_handler)
                 daemon_log_handler.close()
-        # After daemon shutdown, print one final summary and attempt upload once
+        # After daemon shutdown, print one final summary and optionally attempt upload once
         report = run_correlation_once()
-        try:
-            upload_scan_results(report, hostname=socket.gethostname())
-        except Exception:
-            logger.warning("DefendAI platform upload failed unexpectedly", exc_info=True)
+        if platform:
+            try:
+                upload_scan_results(
+                    report,
+                    hostname=socket.gethostname(),
+                    api_key=api_key,
+                    tenant_token=tenant_token,
+                    wawsdb_url=wawsdb_url,
+                )
+            except Exception:
+                logger.warning("DefendAI platform upload failed unexpectedly", exc_info=True)
 
     # Final summary table
     console.print("\n[bold cyan]🤖 Autonomous Agent Inventory[/bold cyan]\n")

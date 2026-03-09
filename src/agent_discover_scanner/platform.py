@@ -5,6 +5,8 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 from uuid import uuid4
 
+import certifi
+
 logger = logging.getLogger(__name__)
 
 try:  # Optional dependency; warn once if missing
@@ -225,7 +227,7 @@ def upload_scan_results(
     }
 
     try:
-        with httpx.Client(timeout=5.0) as client:  # type: ignore[call-arg]
+        with httpx.Client(timeout=30.0, verify=certifi.where()) as client:  # type: ignore[call-arg]
             response = client.post(url, json=payload, headers=headers)
 
         if 200 <= response.status_code < 300:

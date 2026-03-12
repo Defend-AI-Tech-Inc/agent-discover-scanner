@@ -111,15 +111,46 @@ def format_agents_for_upload(scan_results: Dict[str, Any]) -> List[Dict[str, Any
             if not isinstance(item, dict):
                 continue
 
+            # Noise filter: skip tests, fixtures, scanner internals, and dependency dirs
+            code_file_val = str(item.get("code_file") or "")
+            agent_id_val = str(item.get("agent_id") or "")
+            combined_path = f"{code_file_val} {agent_id_val}".lower()
+            if any(
+                pattern in combined_path
+                for pattern in (
+                    "tests/",
+                    "fixtures/",
+                    "test_",
+                    "agent_discover_scanner/",
+                    "node_modules/",
+                    "site-packages/",
+                    ".venv/",
+                )
+            ):
+                continue
+
             # Derive a human-friendly name with sensible fallbacks
-            name = (
-                item.get("k8s_workload")
-                or item.get("k8s_pod")
-                or item.get("process_name")
-                or item.get("code_file")
-                or item.get("agent_id")
-                or "unknown-agent"
-            )
+            name: str
+            if item.get("k8s_workload"):
+                name = str(item["k8s_workload"])
+            elif item.get("k8s_pod"):
+                name = str(item["k8s_pod"])
+            elif item.get("process_name"):
+                name = str(item["process_name"])
+            else:
+                # Fallback to code_file or agent_id with cleanup
+                raw = code_file_val or agent_id_val
+                if raw:
+                    # Strip :NNN suffix if present
+                    parts = raw.rsplit(":", 1)
+                    if len(parts) == 2 and parts[1].isdigit():
+                        raw_path = parts[0]
+                    else:
+                        raw_path = raw
+                    base = os.path.basename(raw_path)
+                    name = os.path.splitext(base)[0] or base or "unknown-agent"
+                else:
+                    name = "unknown-agent"
 
             framework = item.get("framework") or "Unknown"
             agent_type = str(classification).upper()

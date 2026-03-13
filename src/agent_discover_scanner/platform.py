@@ -11,6 +11,8 @@ import certifi
 import getpass
 import platform as _platform
 
+from agent_discover_scanner.saas_detector import build_saas_connections
+
 logger = logging.getLogger(__name__)
 
 try:  # Optional dependency; warn once if missing
@@ -129,6 +131,32 @@ def format_agents_for_upload(scan_results: Dict[str, Any]) -> List[Dict[str, Any
             ):
                 continue
 
+            saas_connections: Dict[str, Any] = {}
+            # Derive file_path for SaaS detection (prefer code_file, fallback to agent_id prefix)
+            file_path_for_saas: Optional[str] = None
+            if code_file_val:
+                file_path_for_saas = code_file_val
+            elif agent_id_val:
+                aid_parts = agent_id_val.rsplit(":", 1)
+                if len(aid_parts) == 2:
+                    file_path_for_saas = aid_parts[0]
+
+            if file_path_for_saas:
+                try:
+                    file_path_for_saas = os.path.abspath(file_path_for_saas)
+                    search_dir = os.path.dirname(file_path_for_saas) or os.getcwd()
+                    saas_connections = build_saas_connections(
+                        file_path=file_path_for_saas,
+                        search_dir=search_dir,
+                    )
+                except Exception as exc:  # pragma: no cover - defensive
+                    logger.warning(
+                        "saas_detector failed for %s: %s",
+                        file_path_for_saas,
+                        exc,
+                    )
+                    saas_connections = {}
+
             # Derive a human-friendly name with sensible fallbacks
             name: str
             if item.get("k8s_workload"):
@@ -169,6 +197,8 @@ def format_agents_for_upload(scan_results: Dict[str, Any]) -> List[Dict[str, Any
                 **item,
                 "classification": classification,
             }
+            if saas_connections:
+                metadata["saas_connections"] = saas_connections
 
             agents.append(
                 {
@@ -176,6 +206,7 @@ def format_agents_for_upload(scan_results: Dict[str, Any]) -> List[Dict[str, Any
                     "framework": framework,
                     "agent_type": agent_type,
                     "confidence_score": confidence_score,
+                    "saas_connections": metadata.get("saas_connections") or {},
                     "metadata": metadata,
                 }
             )

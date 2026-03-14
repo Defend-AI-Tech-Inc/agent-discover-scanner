@@ -84,7 +84,11 @@ def load_credentials() -> Optional[Dict[str, str]]:
         return None
 
 
-def format_agents_for_upload(scan_results: Dict[str, Any]) -> List[Dict[str, Any]]:
+def format_agents_for_upload(
+    scan_results: Dict[str, Any],
+    network_findings: Optional[List[Any]] = None,
+    layer4_findings: Optional[List[Any]] = None,
+) -> List[Dict[str, Any]]:
     """
     Convert scanner inventory report into /scanner/ingest agents[] format.
 
@@ -103,6 +107,11 @@ def format_agents_for_upload(scan_results: Dict[str, Any]) -> List[Dict[str, Any
     inventory = scan_results.get("inventory") or {}
     if not isinstance(inventory, dict):
         return []
+
+    # Machine context once per run (platform uses for cross-machine correlation)
+    _hostname = socket.gethostname()
+    _username = os.getenv("USER") or os.getenv("USERNAME") or "unknown"
+    _os = _platform.system()
 
     agents: List[Dict[str, Any]] = []
 
@@ -131,23 +140,27 @@ def format_agents_for_upload(scan_results: Dict[str, Any]) -> List[Dict[str, Any
             ):
                 continue
 
-            saas_connections: Dict[str, Any] = {}
-            # Derive file_path for SaaS detection (prefer code_file, fallback to agent_id prefix)
-            file_path_for_saas: Optional[str] = None
-            if code_file_val:
-                file_path_for_saas = code_file_val
-            elif agent_id_val:
-                aid_parts = agent_id_val.rsplit(":", 1)
-                if len(aid_parts) == 2:
-                    file_path_for_saas = aid_parts[0]
-
-            if file_path_for_saas:
+            saas_connections = (
+                getattr(item, "saas_connections", None)
+                or item.get("saas_connections")
+                or {}
+            )
+            file_path_for_saas = code_file_val or (
+                agent_id_val.rsplit(":", 1)[0] if ":" in agent_id_val else ""
+            )
+            if not saas_connections and file_path_for_saas:
                 try:
                     file_path_for_saas = os.path.abspath(file_path_for_saas)
                     search_dir = os.path.dirname(file_path_for_saas) or os.getcwd()
+                    agent_fw = item.get("framework") or item.get("network_provider") or ""
+                    agent_proc = item.get("process_name") or ""
                     saas_connections = build_saas_connections(
                         file_path=file_path_for_saas,
                         search_dir=search_dir,
+                        network_findings=network_findings,
+                        layer4_findings=layer4_findings,
+                        agent_framework=agent_fw or None,
+                        agent_process_name=agent_proc or None,
                     )
                 except Exception as exc:  # pragma: no cover - defensive
                     logger.warning(
@@ -196,6 +209,9 @@ def format_agents_for_upload(scan_results: Dict[str, Any]) -> List[Dict[str, Any
             metadata = {
                 **item,
                 "classification": classification,
+                "hostname": _hostname,
+                "username": _username,
+                "os": _os,
             }
             if saas_connections:
                 metadata["saas_connections"] = saas_connections
@@ -206,6 +222,9 @@ def format_agents_for_upload(scan_results: Dict[str, Any]) -> List[Dict[str, Any
                     "framework": framework,
                     "agent_type": agent_type,
                     "confidence_score": confidence_score,
+                    "hostname": _hostname,
+                    "username": _username,
+                    "os": _os,
                     "saas_connections": metadata.get("saas_connections") or {},
                     "metadata": metadata,
                 }
@@ -220,6 +239,8 @@ def upload_scan_results(
     api_key: Optional[str] = None,
     tenant_token: Optional[str] = None,
     wawsdb_url: str = _DEFAULT_WAWSDB_URL,
+    network_findings: Optional[List[Any]] = None,
+    layer4_findings: Optional[List[Any]] = None,
 ) -> bool:
     """
     Upload scan results to DefendAI platform.
@@ -273,7 +294,11 @@ def upload_scan_results(
     else:
         print("💡 No credentials provided — uploading to DefendAI sandbox for preview")
 
-    agents = format_agents_for_upload(scan_results)
+    agents = format_agents_for_upload(
+        scan_results,
+        network_findings=network_findings,
+        layer4_findings=layer4_findings,
+    )
     if not agents:
         # Nothing to upload; treat as success from the caller's perspective
         return True

@@ -6,10 +6,12 @@ Creates unified agent inventory and detects Ghost Agents.
 
 import json
 import socket
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
+
+import os
 
 
 # Known LLM API hostnames for inferring provider from remote_address (Layer 4)
@@ -95,6 +97,10 @@ class AgentInventoryItem:
     # Metadata
     discovered_at: Optional[str] = None
 
+    # SaaS and risk (populated during correlation)
+    saas_connections: Dict[str, Any] = field(default_factory=dict)
+    risk_flags: List[str] = field(default_factory=list)
+
     def __post_init__(self):
         if self.discovered_at is None:
             self.discovered_at = datetime.now().isoformat()
@@ -103,6 +109,49 @@ class AgentInventoryItem:
 
     def to_dict(self) -> dict:
         return asdict(self)
+
+
+def _populate_saas_and_risk_flags(
+    item: AgentInventoryItem,
+    file_path: str,
+    search_dir: str,
+    network_findings: List[Dict],
+    layer4_findings: List[Dict],
+) -> None:
+    """Set item.saas_connections and item.risk_flags. Never raises."""
+    try:
+        from agent_discover_scanner.saas_detector import build_saas_connections
+
+        if item.classification == "ghost":
+            agent_framework = item.network_provider or ""
+            agent_process_name = item.process_name or ""
+        else:
+            agent_framework = item.framework or ""
+            agent_process_name = item.process_name or ""
+
+        saas = build_saas_connections(
+            file_path=file_path,
+            search_dir=search_dir,
+            network_findings=network_findings or [],
+            layer4_findings=layer4_findings or [],
+            agent_framework=agent_framework or None,
+            agent_process_name=agent_process_name or None,
+        )
+    except Exception:
+        saas = {}
+    item.saas_connections = saas
+
+    risk_flags = []
+    detected = saas.get("detected", [])
+    if item.classification == "ghost" and detected:
+        risk_flags.append("critical_ghost")
+    if saas.get("has_cloud_provider"):
+        risk_flags.append("cloud_credentials_present")
+    if saas.get("has_database_access"):
+        risk_flags.append("database_credentials_present")
+    if saas.get("has_external_api_calls") and item.classification == "unknown":
+        risk_flags.append("unverified_saas_access")
+    item.risk_flags = risk_flags
 
 
 class CorrelationEngine:
@@ -494,7 +543,7 @@ class CorrelationEngine:
     def correlate(
         cls,
         code_findings: List[Dict],
-        network_findings: List[Dict],
+        network_findings: Optional[List[Dict]] = None,
         layer4_findings: Optional[List[Dict]] = None,
         layer3_findings: Optional[List[Dict]] = None,
     ) -> Dict[str, List[AgentInventoryItem]]:
@@ -509,6 +558,7 @@ class CorrelationEngine:
             Dictionary with classifications: confirmed, zombie, ghost, unknown
         """
         inventory = {"confirmed": [], "zombie": [], "ghost": [], "unknown": []}
+        network_findings = network_findings or []
         layer4_findings = layer4_findings or []
         layer3_findings = layer3_findings or []
 
@@ -662,6 +712,14 @@ class CorrelationEngine:
                 k8s_workload=k8s_workload,
                 detection_layers=detection_layers,
             )
+            try:
+                _file_path = (cf.get("file_path") or "") or ""
+                _search_dir = os.path.dirname(_file_path) if _file_path else ""
+                _populate_saas_and_risk_flags(
+                    item, _file_path, _search_dir, network_findings, layer4_findings
+                )
+            except Exception:
+                pass
             inventory[classification].append(item)
 
         # GHOST AGENTS: Layer 2/3/4 activity with no code finding
@@ -671,17 +729,22 @@ class CorrelationEngine:
                 continue
             seen_providers.add(provider)
             ghost_id = f"ghost:{provider}:{info.get('process', '')}"
-            inventory["ghost"].append(
-                AgentInventoryItem(
-                    agent_id=ghost_id,
-                    classification="ghost",
-                    risk_level="critical",
-                    network_provider=provider,
-                    last_seen=info.get("timestamp"),
-                    process_name=info.get("process"),
-                    detection_layers=["layer2"],
-                )
+            ghost_item = AgentInventoryItem(
+                agent_id=ghost_id,
+                classification="ghost",
+                risk_level="critical",
+                network_provider=provider,
+                last_seen=info.get("timestamp"),
+                process_name=info.get("process"),
+                detection_layers=["layer2"],
             )
+            try:
+                _populate_saas_and_risk_flags(
+                    ghost_item, "", "", network_findings, layer4_findings
+                )
+            except Exception:
+                pass
+            inventory["ghost"].append(ghost_item)
 
         # Layer 3 GHOST: any pod/workload with no matching Layer 1 code finding (regardless of provider).
         # Deduplicate by workload name (not pod), keeping the most recent pod per workload.
@@ -697,38 +760,48 @@ class CorrelationEngine:
         for l3 in workload_to_l3.values():
             provider = (l3.get("provider") or "unknown").lower()
             ghost_id = f"ghost:{provider}:{l3.get('workload', l3.get('pod', ''))}"
-            inventory["ghost"].append(
-                AgentInventoryItem(
-                    agent_id=ghost_id,
-                    classification="ghost",
-                    risk_level="critical",
-                    network_provider=provider,
-                    last_seen=l3.get("timestamp"),
-                    k8s_pod=l3.get("pod"),
-                    k8s_namespace=l3.get("namespace"),
-                    k8s_workload=l3.get("workload"),
-                    detection_layers=["layer3"],
-                )
+            ghost_item = AgentInventoryItem(
+                agent_id=ghost_id,
+                classification="ghost",
+                risk_level="critical",
+                network_provider=provider,
+                last_seen=l3.get("timestamp"),
+                k8s_pod=l3.get("pod"),
+                k8s_namespace=l3.get("namespace"),
+                k8s_workload=l3.get("workload"),
+                detection_layers=["layer3"],
             )
+            try:
+                _populate_saas_and_risk_flags(
+                    ghost_item, "", "", network_findings, layer4_findings
+                )
+            except Exception:
+                pass
+            inventory["ghost"].append(ghost_item)
 
         for provider, l4 in layer4_by_provider.items():
             if provider in seen_providers:
                 continue
             seen_providers.add(provider)
             ghost_id = f"ghost:{provider}:{l4.get('process_name', '')}"
-            inventory["ghost"].append(
-                AgentInventoryItem(
-                    agent_id=ghost_id,
-                    classification="ghost",
-                    risk_level="critical",
-                    network_provider=provider,
-                    process_name=l4.get("process_name"),
-                    endpoint_process=l4.get("process_name"),
-                    endpoint_pid=l4.get("pid"),
-                    endpoint_local_port=l4.get("local_port"),
-                    detection_layers=["layer4"],
-                )
+            ghost_item = AgentInventoryItem(
+                agent_id=ghost_id,
+                classification="ghost",
+                risk_level="critical",
+                network_provider=provider,
+                process_name=l4.get("process_name"),
+                endpoint_process=l4.get("process_name"),
+                endpoint_pid=l4.get("pid"),
+                endpoint_local_port=l4.get("local_port"),
+                detection_layers=["layer4"],
             )
+            try:
+                _populate_saas_and_risk_flags(
+                    ghost_item, "", "", network_findings, layer4_findings
+                )
+            except Exception:
+                pass
+            inventory["ghost"].append(ghost_item)
 
         return inventory
 

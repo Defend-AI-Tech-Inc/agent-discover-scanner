@@ -601,6 +601,34 @@ def scan_all(
     except ValidationError:
         raise typer.Exit(code=1)
 
+    scan_root = scan_root.resolve()
+    try:
+        py_count = sum(
+            1
+            for _ in scan_root.rglob("*.py")
+            if not any(
+                skip in str(_)
+                for skip in (
+                    ".venv",
+                    "venv",
+                    "node_modules",
+                    "site-packages",
+                    "__pycache__",
+                    ".git",
+                    "dist",
+                    "build",
+                )
+            )
+        )
+        if py_count > 500:
+            console.print(
+                f"[yellow]⚠  Large scan path detected: {py_count} Python files. "
+                f"Consider scanning a specific project directory for faster results. "
+                f"Example: agent-discover-scanner scan-all ./my-project[/yellow]\n"
+            )
+    except Exception:
+        pass  # Never fail the scan because of this warning
+
     output_dir = output
     output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -820,6 +848,15 @@ def scan_all(
                 nf = list(network_findings)
                 l3 = list(layer3_findings)
                 l4 = list(layer4_findings)
+        # Merge layer2 findings + connections so correlate gets full network data
+        try:
+            if layer2_json.exists():
+                layer2_data = json.loads(layer2_json.read_text())
+                nf = (layer2_data.get("findings") or []) + (
+                    layer2_data.get("connections") or []
+                )
+        except Exception:
+            pass
         console.print("[bold cyan]🔗 Correlating findings...[/bold cyan]\n")
         inventory = CorrelationEngine.correlate(
             code_findings=cf,
@@ -827,6 +864,7 @@ def scan_all(
             layer4_findings=l4,
             layer3_findings=l3,
         )
+        console.print("[dim]✓ Correlation complete[/dim]\n")
         # Daemon: preserve first-seen (discovered_at) from previous inventory
         previous_discovered_at = None
         if daemon and inventory_path.exists():
@@ -880,12 +918,23 @@ def scan_all(
         report = run_correlation_once()
         if platform:
             try:
+                network_for_upload = network_findings or []
+                try:
+                    if layer2_json.exists():
+                        data = json.loads(layer2_json.read_text())
+                        network_for_upload = (data.get("findings") or []) + (
+                            data.get("connections") or []
+                        )
+                except Exception:
+                    pass
                 upload_scan_results(
                     report,
                     hostname=socket.gethostname(),
                     api_key=api_key,
                     tenant_token=tenant_token,
                     wawsdb_url=wawsdb_url,
+                    network_findings=network_for_upload,
+                    layer4_findings=layer4_findings,
                 )
             except Exception:
                 logger.warning("DefendAI platform upload failed unexpectedly", exc_info=True)

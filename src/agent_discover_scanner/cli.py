@@ -442,6 +442,7 @@ def correlate(
     - GHOST: Active agents with NO code found (CRITICAL)
     """
     from agent_discover_scanner.correlator import CorrelationEngine
+    from agent_discover_scanner.known_apps import build_known_apps
 
     console.print("[bold green]Correlating findings...[/bold green]\n")
 
@@ -461,7 +462,10 @@ def correlate(
     console.print(f"  • Network findings: {len(network_findings)}\n")
 
     # Correlate
-    inventory = CorrelationEngine.correlate(code_findings, network_findings)
+    known_apps = build_known_apps()
+    inventory = CorrelationEngine.correlate(
+        code_findings, network_findings, known_apps=known_apps
+    )
 
     # Behavioral analysis
     if network_findings:
@@ -497,6 +501,11 @@ def correlate(
 
     table.add_row("CONFIRMED", str(report["summary"]["confirmed"]), "Code + Network (Active)")
     table.add_row("UNKNOWN", str(report["summary"]["unknown"]), "Code Only (Not Yet Active)")
+    table.add_row(
+        "SHADOW AI",
+        str(report["summary"].get("shadow_ai_usage", 0)),
+        "Known app using AI — review for governance",
+    )
     table.add_row("ZOMBIE", str(report["summary"]["zombie"]), "Code But No Traffic (Deprecated)")
     table.add_row(
         "GHOST",
@@ -527,12 +536,17 @@ def correlate(
 @app.command("scan-all")
 def scan_all(
     path: str = typer.Argument(..., help="Directory to scan"),
-    duration: int = typer.Option(60, "--duration", "-d", help="Network/K8s monitor duration in seconds"),
+    duration: int = typer.Option(
+        60,
+        "--duration",
+        "-d",
+        help="Network and K8s monitor observation window in seconds",
+    ),
     output: Path = typer.Option(
         Path("defendai-results"),
         "--output",
         "-o",
-        help="Output directory for all results",
+        help="Output directory for scan results",
     ),
     format: str = typer.Option(
         "text",
@@ -553,7 +567,7 @@ def scan_all(
     daemon: bool = typer.Option(
         False,
         "--daemon",
-        help="Run continuously and update correlation in real time",
+        help="Run continuously, re-scanning every 30 seconds",
     ),
     max_log_size: int = typer.Option(
         50,
@@ -568,7 +582,7 @@ def scan_all(
     platform: bool = typer.Option(
         False,
         "--platform",
-        help="Upload results to DefendAI platform",
+        help="Upload results to DefendAI platform after scan",
     ),
     api_key: Optional[str] = typer.Option(
         None,
@@ -588,11 +602,18 @@ def scan_all(
     platform_interval: int = typer.Option(
         5,
         "--platform-interval",
-        help="Upload to platform every N correlation cycles in daemon mode (default 5, ~2.5 min). Only when --daemon and --platform are set.",
+        help="Upload to platform every N correlation cycles in daemon mode (default: 5)",
+    ),
+    verbose: bool = typer.Option(
+        False,
+        "--verbose",
+        "-v",
+        help="Show detailed output including Layer 3/Kubernetes errors",
     ),
 ):
     """
-    Run a full 4-layer AI agent scan and correlate all findings.
+    Run a full 4-layer AI agent scan, correlate all findings,
+    and optionally upload results to the DefendAI platform.
     """
     from agent_discover_scanner.correlator import CorrelationEngine
     from agent_discover_scanner.network_monitor import NetworkMonitor
@@ -636,6 +657,26 @@ def scan_all(
 
     output_dir = output
     output_dir.mkdir(parents=True, exist_ok=True)
+
+    # Known desktop apps: Tier 1 platform (if --platform), Tier 2 local file, Tier 3 builtin
+    from agent_discover_scanner.known_apps import build_known_apps, load_platform_known_apps
+
+    platform_apps = frozenset()
+    if platform:
+        try:
+            console.print("[dim]Fetching known apps list from platform...[/dim]")
+            platform_apps = load_platform_known_apps(
+                api_key=api_key,
+                tenant_token=tenant_token,
+                wawsdb_url=wawsdb_url,
+            )
+            if platform_apps:
+                console.print(
+                    f"[dim]Platform: {len(platform_apps)} known apps loaded[/dim]"
+                )
+        except Exception:
+            pass
+    known_apps = build_known_apps(platform_apps=platform_apps)
 
     # Parse skip-layers
     skip_set = set()
@@ -768,6 +809,7 @@ def scan_all(
                     duration=duration,
                     output_file=layer3_jsonl,
                     output_format="jsonl",
+                    verbose=verbose,
                 )
                 tetragon_findings = CorrelationEngine.load_layer3_findings(layer3_jsonl)
                 if tetragon_findings:
@@ -775,26 +817,30 @@ def scan_all(
             except FileNotFoundError:
                 pass
             except Exception as e:
-                console.print(f"[yellow]Tetragon error: {e}[/yellow]")
+                if verbose:
+                    console.print(f"[yellow]Tetragon error: {e}[/yellow]")
 
         if tetragon_ok:
             new_findings = tetragon_findings
             console.print("[bold green]Layer 3+: eBPF/Tetragon active (deep network visibility)[/bold green]")
         else:
-            console.print("[yellow]Layer 3: Tetragon unavailable, falling back to Kubernetes API discovery[/yellow]")
-            console.print("[bold green]Layer 3: Kubernetes API discovery (install Tetragon for deeper visibility)[/bold green]")
+            if verbose:
+                console.print("[yellow]Layer 3: Tetragon unavailable, falling back to Kubernetes API discovery[/yellow]")
+                console.print("[bold green]Layer 3: Kubernetes API discovery (install Tetragon for deeper visibility)[/bold green]")
             api_findings: list = []
             try:
                 api_monitor = K8sAPIMonitor()
                 api_findings = api_monitor.discover_agents()
             except Exception as e:
-                console.print(f"[yellow]Kubernetes API discovery failed: {e}[/yellow]")
+                if verbose:
+                    console.print(f"[yellow]Kubernetes API discovery failed: {e}[/yellow]")
             try:
                 with open(layer3_jsonl, "w") as f:
                     for finding in api_findings:
                         f.write(json.dumps(finding) + "\n")
             except OSError as e:
-                console.print(f"[red]Failed to write Layer 3 findings: {e}[/red]")
+                if verbose:
+                    console.print(f"[red]Failed to write Layer 3 findings: {e}[/red]")
             new_findings = CorrelationEngine.load_layer3_findings(layer3_jsonl)
 
         if not daemon:
@@ -868,6 +914,7 @@ def scan_all(
             network_findings=nf,
             layer4_findings=l4,
             layer3_findings=l3,
+            known_apps=known_apps,
         )
         console.print("[dim]✓ Correlation complete[/dim]\n")
         # Daemon: preserve first-seen (discovered_at) from previous inventory
@@ -891,19 +938,20 @@ def scan_all(
         if daemon:
             history_path = inventory_path.parent / "agent_inventory_history.jsonl"
             try:
-                with open(history_path, "a") as f:
-                    f.write(
-                        json.dumps(
-                            {
-                                "timestamp": report["generated_at"],
-                                "confirmed": report["summary"]["confirmed"],
-                                "ghost": report["summary"]["ghost"],
-                                "unknown": report["summary"]["unknown"],
-                                "zombie": report["summary"].get("zombie", 0),
-                            }
+                    with open(history_path, "a") as f:
+                        f.write(
+                            json.dumps(
+                                {
+                                    "timestamp": report["generated_at"],
+                                    "confirmed": report["summary"]["confirmed"],
+                                    "ghost": report["summary"]["ghost"],
+                                    "unknown": report["summary"]["unknown"],
+                                    "zombie": report["summary"].get("zombie", 0),
+                                    "shadow_ai_usage": report["summary"].get("shadow_ai_usage", 0),
+                                }
+                            )
+                            + "\n"
                         )
-                        + "\n"
-                    )
             except OSError:
                 pass
         return report
@@ -1254,6 +1302,11 @@ def scan_all(
         "UNKNOWN",
         str(report["summary"]["unknown"]),
         "Code found — not yet observed at runtime",
+    )
+    summary_table.add_row(
+        "SHADOW AI",
+        str(report["summary"].get("shadow_ai_usage", 0)),
+        "Known app using AI — review for governance",
     )
     summary_table.add_row(
         "ZOMBIE",

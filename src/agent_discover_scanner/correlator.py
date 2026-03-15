@@ -13,6 +13,8 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import os
 
+from agent_discover_scanner.known_apps import build_known_apps, is_known_desktop_app
+
 
 # Known LLM API hostnames for inferring provider from remote_address (Layer 4)
 LLM_HOSTNAME_TO_PROVIDER: List[Tuple[str, str]] = [
@@ -546,6 +548,7 @@ class CorrelationEngine:
         network_findings: Optional[List[Dict]] = None,
         layer4_findings: Optional[List[Dict]] = None,
         layer3_findings: Optional[List[Dict]] = None,
+        known_apps: Optional[frozenset] = None,
     ) -> Dict[str, List[AgentInventoryItem]]:
         """
         Correlate code and network/layer3/layer4 findings.
@@ -553,11 +556,14 @@ class CorrelationEngine:
         A finding is CONFIRMED if it appears in code (Layer 1) + any of Layer 2/3/4.
         Populates detection_layers, k8s fields from Layer 3, endpoint fields from Layer 4.
         Risk is escalated by one level if detected in Layer 3 (runtime eBPF).
+        Layer 2/4 runtime-only findings: if process is a known desktop app → shadow_ai_usage; else → ghost.
 
         Returns:
-            Dictionary with classifications: confirmed, zombie, ghost, unknown
+            Dictionary with classifications: confirmed, zombie, ghost, unknown, shadow_ai_usage
         """
-        inventory = {"confirmed": [], "zombie": [], "ghost": [], "unknown": []}
+        if known_apps is None:
+            known_apps = build_known_apps()
+        inventory = {"confirmed": [], "zombie": [], "ghost": [], "unknown": [], "shadow_ai_usage": []}
         network_findings = network_findings or []
         layer4_findings = layer4_findings or []
         layer3_findings = layer3_findings or []
@@ -722,20 +728,23 @@ class CorrelationEngine:
                 pass
             inventory[classification].append(item)
 
-        # GHOST AGENTS: Layer 2/3/4 activity with no code finding
+        # GHOST / SHADOW_AI_USAGE: Layer 2/3/4 activity with no code finding
         seen_providers = {item.network_provider for item in inventory["confirmed"] if item.network_provider}
+        _known_apps = known_apps or frozenset()
         for provider, info in active_providers.items():
             if provider in seen_providers:
                 continue
             seen_providers.add(provider)
-            ghost_id = f"ghost:{provider}:{info.get('process', '')}"
+            process_name = info.get("process", "")
+            classification = "shadow_ai_usage" if is_known_desktop_app(process_name, _known_apps) else "ghost"
+            agent_id = f"shadow:{provider}:{process_name}" if classification == "shadow_ai_usage" else f"ghost:{provider}:{process_name}"
             ghost_item = AgentInventoryItem(
-                agent_id=ghost_id,
-                classification="ghost",
+                agent_id=agent_id,
+                classification=classification,
                 risk_level="critical",
                 network_provider=provider,
                 last_seen=info.get("timestamp"),
-                process_name=info.get("process"),
+                process_name=process_name,
                 detection_layers=["layer2"],
             )
             try:
@@ -744,7 +753,7 @@ class CorrelationEngine:
                 )
             except Exception:
                 pass
-            inventory["ghost"].append(ghost_item)
+            inventory[classification].append(ghost_item)
 
         # Layer 3 GHOST: any pod/workload with no matching Layer 1 code finding (regardless of provider).
         # Deduplicate by workload name (not pod), keeping the most recent pod per workload.
@@ -783,13 +792,15 @@ class CorrelationEngine:
             if provider in seen_providers:
                 continue
             seen_providers.add(provider)
-            ghost_id = f"ghost:{provider}:{l4.get('process_name', '')}"
+            process_name = l4.get("process_name") or l4.get("process") or ""
+            classification = "shadow_ai_usage" if is_known_desktop_app(process_name, _known_apps) else "ghost"
+            agent_id = f"shadow:{provider}:{process_name}" if classification == "shadow_ai_usage" else f"ghost:{provider}:{process_name}"
             ghost_item = AgentInventoryItem(
-                agent_id=ghost_id,
-                classification="ghost",
+                agent_id=agent_id,
+                classification=classification,
                 risk_level="critical",
                 network_provider=provider,
-                process_name=l4.get("process_name"),
+                process_name=process_name,
                 endpoint_process=l4.get("process_name"),
                 endpoint_pid=l4.get("pid"),
                 endpoint_local_port=l4.get("local_port"),
@@ -801,7 +812,12 @@ class CorrelationEngine:
                 )
             except Exception:
                 pass
-            inventory["ghost"].append(ghost_item)
+            inventory[classification].append(ghost_item)
+
+        # Shadow AI is a known app — cap risk at medium (governance finding, not security emergency)
+        for item in inventory.get("shadow_ai_usage", []):
+            if item.risk_level in ("critical", "high"):
+                item.risk_level = "medium"
 
         return inventory
 
@@ -846,6 +862,7 @@ class CorrelationEngine:
                 "unknown": len(inventory["unknown"]),
                 "zombie": len(inventory["zombie"]),
                 "ghost": len(inventory["ghost"]),
+                "shadow_ai_usage": len(inventory.get("shadow_ai_usage", [])),
                 "detection_coverage": detection_coverage,
             },
             "risk_breakdown": {

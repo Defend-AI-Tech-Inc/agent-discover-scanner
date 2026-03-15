@@ -101,6 +101,7 @@ def format_agents_for_upload(
                 "unknown": [...],
                 "zombie": [...],
                 "ghost": [...],
+                "shadow_ai_usage": [...],
             },
         }
     """

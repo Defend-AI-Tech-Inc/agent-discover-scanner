@@ -99,11 +99,33 @@ def test_correlate_ghost_agents():
 
     inventory = CorrelationEngine.correlate(code_findings, network_findings)
 
-    # Should detect a GHOST (network traffic with no code)
+    # Should detect a GHOST (network traffic with no code; process not a known desktop app)
     assert len(inventory["ghost"]) == 1
     assert inventory["ghost"][0].classification == "ghost"
     assert inventory["ghost"][0].risk_level == "critical"
     assert inventory["ghost"][0].network_provider == "anthropic"
+
+
+def test_correlate_shadow_ai_usage_known_desktop_app():
+    """Test that known desktop app (e.g. Cursor) with AI traffic is shadow_ai_usage, not ghost."""
+    code_findings = []
+    network_findings = [
+        {
+            "timestamp": datetime.now().isoformat(),
+            "provider": "openai",
+            "process_name": "Cursor",
+            "destination": "api.openai.com",
+        }
+    ]
+
+    inventory = CorrelationEngine.correlate(code_findings, network_findings)
+
+    # Cursor is in BUILTIN_KNOWN_APPS → shadow_ai_usage, not ghost
+    assert len(inventory["shadow_ai_usage"]) == 1
+    assert inventory["shadow_ai_usage"][0].classification == "shadow_ai_usage"
+    assert inventory["shadow_ai_usage"][0].process_name == "Cursor"
+    assert inventory["shadow_ai_usage"][0].network_provider == "openai"
+    assert len(inventory["ghost"]) == 0
 
 
 def test_correlate_risk_classification():

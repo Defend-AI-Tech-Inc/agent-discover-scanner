@@ -1,0 +1,12 @@
+# DefendAI Known Desktop Applications — Local Override
+# Place this file at ~/.defendai/known_apps.txt
+# or ./defendai-known-apps.txt in your scan directory
+#
+# One application name per line (case-insensitive)
+# Lines starting with # are comments
+# These are merged WITH the built-in list, not replacing it
+#
+# Examples:
+# my-internal-ai-tool
+# company-llm-client
+# internal-copilot

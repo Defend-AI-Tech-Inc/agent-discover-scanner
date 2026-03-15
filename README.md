@@ -15,63 +15,124 @@
 
 ---
 
-> **Every enterprise is about to deploy AI systems that act autonomously.  
-> Who governs them once they start acting?**
+## The Finding That Matters
 
-Most enterprises think AI risk means employees pasting data into ChatGPT. That's yesterday's problem.
+```
+👻 GHOST AGENT DETECTED
+   Workload:   trading-bot (Deployment/default)
+   Connected:  api.openai.com — LIVE
+   SaaS:       openai — confirmed active connection
+   Source code: None found in scanned repositories
+   Owner:      Unknown — no deployment record, no code review
 
-The real risk is **AI agents with API keys, database access, and tool privileges acting independently** — without a human in the loop, without a registry, without governance.
+👻 GHOST AGENT DETECTED
+   Workload:   shadow-agent (Pod/kube-system)
+   C api.anthropic.com — LIVE
+   SaaS:       anthropic — confirmed  |  gcp — active socket
+   Blast radius: HIGH (cloud provider access confirmed)
+   Source code: None found in scanned repositories
+   Owner:      Unknown — no deployment record, no code review
+```
 
-AgentDiscover Scanner is Step 1: **find everything that's running.**
+An AI system is making real API calls — consuming tokens, potentially accessing sensitive data — and your engineering team has no record of it. No code, no deployment, no owner. AgentDiscover Scanner finds these in under 60 seconds.
+
+**That's the problem.** Your engineering team thinks they know what AI systems are running. They don't.
 
 ---
 
-## What It Finds
+## What Makes This Different
+
+Most security tools tell you what's in your code. AgentDiscover Scanner tells you what's **actually running** — and crucially, what's running that has **no business being there**.
+
+The GHOST classification is unique: an AI system observed making real API calls with zero corresponding source code. No other static analysis tool can find this. No SIEM will alert on it. It oen you watch the runtime and cross-reference it against your codebase simultaneously.
+
+As of v2.3.0, every detected agent also carries a **SaaS blast radius** — a live-observed map of which services it's actively connected to, derived from network traffic not just configuration files.
+
+```
+crewai-agent (CONFIRMED)
+  saas_connections:
+    anthropic: confirmed  ← active_connection observed
+    github:    medium     ← open socket
+  risk_flags: [cloud_credentials_present]
+  blast_radius: 70/100
+```
+
+---
+
+## Agent Classifications
 
 | Classification | What It Means | Risk |
 |---|---|---|
-| ✅ **CONFIRMED** | Agent detected in code AND observed running at runtime | High — actively executing |
-| 👻 **GHOST** | Agent observed at runtime with NO corresponding source code | **Critical — ungoverned** |
-| ⚠️ **UNKNOWN** | Agent found in code, not yet observed at runtime | Medium — unverified |
-| ☠️ **ZOMBIE** | Agent in code, was active, no longer observed | Low — potentially abandoned |
+| 👻 **GHOST** | Runtime AI activity — no source code found | **Critical** |
+| ✅ **CONFIRMED** | Detected in code AND observed running | High |
+| ⚠️ **UNKNOWN** | Found in code, not yet observed at runtime | Medium |
+| ☠️ **ZOMBIE** | Was active, no longer observed | Low |
 
-**GHOST agents are the most dangerous finding.** An AI system is making real API calls — consuming tokens, potentially accessing data — but your engineering team has no record of it. No code, no deployment, no owner.
+**GHOST agents are the most dangerous finding.** An AI system is making real API calls — consuming tokens, potentially accessing sensitivneering team has no record of it. No code, no deployment, no owner.
 
 ---
 
 ## Quick Start
 
 ```bash
-# Install
 pip install agent-discover-scanner
-
-# Scan a codebase
-agent-discover-scanner scan-all /path/to/your/code
+agent-discover-scanner scan-all /path/to/your/code --duration 30
 ```
 
-For Kubernetes environments (full deployment):
+For Kubernetes environments:
 ```bash
 curl -fsSL https://raw.githubusercontent.com/Defend-AI-Tech-Inc/agent-discover-scanner/main/install.sh | sudo bash
 agent-discover-scanner scan-all /path/to/code --daemon --output /var/log/defendai
+```
+
+To upload results to the DefendAI platform:
+```bash
+agent-discover-scanner scan-all /path/to/code \
+  --platform \
+  --api-key YOUR_API_KEY
 ```
 
 ---
 
 ## How It Works
 
-AgentDiscover Scanner combines four detection methods and correlates them into a single agent inventory.
+AgentDiscover Scanner runs four detection layers simultaneously and correlates them into a single agent inventory. Each layer sees something the others can't.
 
-**Source Code Analysis**  
-Static analysis of Python and JavaScript/TypeScript codebases. Detects LangChain, LangGraph, CrewAI, AutoGen, direct OpenAI/Anthropic/Gemini API usage, and any HTTP client targeting LLM provider endpoints. Handles import aliasing and indirect usage patterns.
+### Layer 1 — Source Code Analysis
+Static analysis of Python and JavaScript/TypeScript. Detects LangChain, LangGraph, CrewAI, AutoGen, direct OpenAI/Anthropic/Gemini API usage, and any HTTP client targeting LLM endpoints. Handles import aliasing and iirect usage patterns. Generates SARIF output for CI/CD integration.
 
-**Network Monitoring**  
-Live observation of outbound connections to AI providers — OpenAI, Anthropic, Google Gemini, Mistral, Cohere, Azure OpenAI, AWS Bedrock, and vector stores (Pinecone, Weaviate, Qdrant). No packet capture required; works passively.
+### Layer 2 — Live Network Monitoring
+Passive observation of outbound connections to AI providers — OpenAI, Anthropic, Google Gemini, Mistral, Cohere, Azure OpenAI, AWS Bedrock, and vector stores. No packet capture. Identifies which process is making each connection, enabling per-agent SaaS attribution.
 
-**Kubernetes Runtime Monitoring**  
-Kernel-level visibility into pod behavior inside your cluster. Identifies which workloads are actively making AI calls — including workloads with no corresponding source code (GHOST agents). Works with any CNI (Flannel, Calico, Weave, AWS VPC CNI, GKE CNI, and others).
+### Layer 3 — Kubernetes Runtime (eBPF)
+Kernel-level visibility into pod behavior via Tetragon. Identifies which workloads are actively making AI calls — including workloads with no corresponding source code. Works with any CNI. Falls back to Kubernetes API discovery if Tetragon is unavailable.
 
-**Endpoint Discovery**  
-Scans developer machines, CI/CD runners, and workstations for AI tool usage — installed AI packages, desktop AI applications (ChatGPT Desktop, Claude Desktop, Cursor, GitHub Copilot), active AI connections, and browser-based AI usage.
+### Layer 4 — Endpoint Discovery
+Scans developer machines, CI/CD runners, and workstations via osquery. Finds installed AI packages, desktop AI applications (ChatGPT Desktop, Claude Desktop, Cursor, GitHub Copilot), active connections, browser-based AI usage, and VSCode extensions.
+
+### SaaS Blast Radius Detection (v2.3.0+)
+After correlatagent receives a `saas_connections` profile built from all four layers:
+
+```json
+{
+  "detected":  ["anthropic", "gcp", "github"],
+  "confirmed": ["anthropic"],
+  "evidence": {
+    "anthropic": ["active_connection", "open_socket"],
+    "gcp":       ["open_socket"],
+    "github":    ["vscode_extension_detected"]
+  },
+  "confidence": {
+    "anthropic": "confirmed",
+    "gcp":       "medium",
+    "github":    "medium"
+  },
+  "has_cloud_provider": true,
+  "has_llm_provider":   true
+}
+```
+
+`confirmed` means the connection was **live-observed** during the scan — not inferred from config files. This is the difference between "this agent is configured to use Anthropic" and "this agent is calling Anthropic right now."
 
 ---
 
@@ -82,28 +143,25 @@ Scans developer machines, CI/CD runners, and workstations for AI tool usage — 
 📂 Analyzing source code at ./my-repo
 🌐 Monitoring live network connections...
 ☸️  Monitoring Kubernetes workloads...
+💻 Scanning endpoints...
 🔗 Correlating findings...
+✓ Correlation complete
 
-🤖 Autonomous Agent Inventory
-┌────────────────┬───────┬────────────────────────────────────────────────────┐
-│ Classification │ Count │ Description                                        │
-├────────────────┼───────┼────────────────────────────────────────────────────┤
-│ CONFIRMED      │   2   │ Active — detected in code and observed at runtime  │
-│ UNKNOWN        │   3   │ Code found — not yet observed at runtime           │
-│ ZOMBIE         │   0   │ Inactive — code exists but no recent activity      │
-│ GHOST          │   1   │ ⚠ Critical — runtime activity with no source code  │
-└────────────────┴───────┴────────────────────────────────────────────────────┘
+🤖 Autonomous Agent────────┬───────┬─────────────────────────────────────────────────────────────────┐
+│ Classification┤
+│ CONFIRMED      │   2   │ Active — detected in code and observed at runtime               │
+│ UNKNOWN        │   3   │ Code found — not yet observed at r          │
+│ ZOMBIE         │   0   │ Inactive — code exists but no recent activity                   │
+│ GHOST          │   1   │ ⚠ Critical — runtime activity with no s)  │
+└────────────────┴───────┴─────────────────────────────────────────────────────────────────┘
 
-✅ Scan complete — results saved to ./results
-```
+Risk Breakdown:
+  ● Critical: 2
+  ● High:     3
+  ● Medium:   1
+  ● Low:      0
 
-**GHOST Agent Alert:**
-```
-👻 GHOST AGENT DETECTED
-   Workload:  trading-bot (Deployment/default)
-   Runtime:   Observed making live API calls to OpenAI
-   Code:      No source code found in scanned repositories
-   Action:    Investigate — this agent has no registered owner
+✅ Scan complete — results saved to ./defendai-results
 ```
 
 ---
@@ -113,17 +171,71 @@ Scans developer machines, CI/CD runners, and workstations for AI tool usage — 
 Run continuously as a background service, updating the agent inventory every 30 seconds:
 
 ```bash
-# Start daemon
 agent-discover-scanner scan-all /path/to/code \
   --daemon \
-  --output /var/log/defendai
+  --output /var/log/defendai \
+  --platform \
+  --platform-interval 5    # upload to platform every ~2.5 minutes
+```
 
-# Install as a systemd service (Linux)
-sudo bash deployment/systemd/install-service.sh /path/to/code
+With `--platform`, the daemon syncs to the DefendAI plaservice.sh /path/to/code
 systemctl status defendai-scanner
 ```
 
-New agents appear in `agent_inventory.json` as they are discovered. Designed for production deployment alongside existing security tooling.
+---
+## Customizing Known Applications
+
+By default the scanner classifies common desktop applications
+(browsers, Office 365, Cursor, Slack, Claude Desktop, etc.) as
+**Shadow AI** rather than GHOST when they make AI API calls.
+To add your own internal tools:
+```bash
+mkdir -p ~/.defendai
+echo "my-internal-ai-tool" >> ~/.defendai/known_apps.txt
+echo "company-llm-client" >> ~/.defendai/known_apps.txt
+```
+
+See `docs/known-apps-example.txt` for the full format.
+
+When connected to the DefendAI platform (`--platform` flag),
+the tenant-managed list is downloaded automatically on startup
+and merged with your local overrides.
+
+---
+## DefendAI Platform Integration
+
+The scanner is the **discovery layer**. The platform is where discovered agents become governed agents.
+
+```bash
+agent-discover-scanner scan-all /path/to/code \
+  --platform \
+  --api-key YOUR_KEY \
+  --duration 30
+```
+
+When connected to the platform, each scan triggers the **correlation engine** which builds a living identity map across every machine, every environment, and every scan:
+
+- **Agent Identity Resolution** — the same CrewAI agent on a laptop, in staging k8s, and in prod k8s is recognized as one agent at different lifecycle stages
+- **Behavioral Drift Detection** — agent added `has_code_execution=true` since last week? That's a signal. Platform tracks it.
+- **Cross-Machine Intelligence** âagent seen on 3 machines and crossed from dev into prod? Automatic risk escalation
+- **SaaS Blast Radius** — platform aggregates confirmed SaaS connections across all scans and computes blast radius score
+
+After aew scans, the DefendAI platform report shows:
+
+```
+Agent Inventory Report — acme-corp
+─────────────────────────────
+ shadow-agent    GHOST     CRITICAL   anthropic, github   blast: 85   machines: 3
+                           ↑ GHOST seen in prction required
+
+ crewai-agent    SHADOW    MEDIUM     openai              blast: 25   machines: 1
+                           ↑ Unreviewed — no governance record
+
+ langchain-agent KNOWN     LOW        openai              blast: 15   machines: 1
+                           ↑ Approved — monitoring active
+─────────────────────────────────────────────────────────────────────
+ 3 agents total · 1 critical · 1 unreviewed · 1 governed
+```
 
 ---
 
@@ -134,12 +246,7 @@ New agents appear in `agent_inventory.json` as they are discovered. Designed for
 - name: Scan for AI Agents
   run: |
     pip install agent-discover-scanner
-    agent-discover-scanner scan . --format sarif --output results.sarif
-
-- name: Upload to GitHub Security
-  uses: github/codeql-action/upload-sarif@v3
-  with:
-    sarif_file: results.sarif
+    agent-discover-f_file: results.sarif
 ```
 
 ---
@@ -147,43 +254,46 @@ New agents appear in `agent_inventory.json` as they are discovered. Designed for
 ## Commands
 
 ```bash
-# Full scan (recommended) — code + network + Kubernetes + endpoints
-agent-discover-scanner scan-all /path/to/code [OPTIONS]
-  --duration SECONDS      Runtime observation window [default: 60]
-  --output PATH           Results directory [default: ./results]
-  --daemon                Run continuously, updating inventory every 30s
-  --layer3-file PATH      Path to Kubernetes runtime log
+# Full scan (recommended) — all 4 layers + correlation
+agent-discover-scanner scan-all PATH [OPTIONS]
+  --duration/-d SECONDS      Network and K8s monitor observation window [default: 60]
+  --output/-o PATH           Output directory for scan results [default: defendai-results]
+  --format/-f TEXT           Output format: text|json|sarif [default: text]
+  --layer3-file PATH         Use existing Tetragon JSONL output (skip live Layer 3)
+ -skip-layers TEXT         Comma-separated layers to skip, e.g. '3' or '2,3'
+  --daemon                   Run continuously, re-scanning every 30 seconds
+  --platform                 Upload results to DefendAI platform after scan
+  --api-key TEXT             DefendAI platform API key
+  --tenant-token TEXT        DefendAI platform tenant token
+  --wawsdb-url TEXT          DefendAI platform base URL [default: https://wauzeway.defendai.ai]
+  --platform-interval INT    Upload every N correlation cycles in daemon mode [default: 5]
+  --max-log-size INT         Rotate output files at this size in MB [default: 50]
+  --max-log-backups INT      Rotated backup files to keep [default: 5]
 
-# Code scan only
-agent-discover-scanner scan /path/to/code
-
-# Dependency scan
-agent-discover-scanner deps /path/to/code
-
-# Network monitor only
-agent-discover-scanner monitor --duration 60
-
-# Kubernetes runtime monitor only
-agent-discover-scanner monitor-k8s --duration 60
-
-# Endpoint scan (current machine)
-agent-discover-scanner endpoint
+# Individual layers
+agent-discover-scanner scan PATH              # Layer 1: source code only
+agent-discover-scanner deps PATH              # Dependency scanning
+agent-discover-scanner monitor                # Layer 2: network monitor only
+agent-discover-scanner monitor-k8s            # Layer 3: Kubernetes runtime only
+agent-discover-scanner endpoint               # Layer 4: endpoint scan only
+agent-discover-scanner correlate              # Correlate existing scan outputs
 ```
 
 ---
 
 ## Detected Frameworks & Providers
 
-**AI Frameworks:** LangChain, LangGraph, CrewAI, AutoGen  
-**LLM Providers:** OpenAI, Anthropic, Google Gemini, Mistral, Cohere, Azure OpenAI, AWS Bedrock  
-**Vector Stores:** Pinecone, Weaviate, Qdrant, Chroma  
-**Direct usage:** Any HTTP client targeting known LLM API endpoints  
+**AI Frameworks:** LangChain, LangGraph, CrewAI, AutoGen, direct HTTP LLM clients
+
+**LLM Providers:** OpenAI, Anthropic, Google Gemini / Google AI, Mistral, Cohere, Azure OpenAI, AWS Bedrock, Groq, DeepSeek
+
+**Vector Stores:** Pinecone, Weaviate, Qdrant, Chroma
+
+**SaaS Blast Radius Detection (v2.3.0+):** Salesforce, Slack, GitHub, GitLab, Jira, HubSpot, Notion, Airtable, Stripe, Twilio, Snowflake, Databricks, AWS, GCP, Azure, PostgreSQL, Redis, MongoDB
 
 ---
 
 ## Try the Demo
-
-Run a complete demo with simulated AI agents in under 10 minutes:
 
 ```bash
 git clone https://github.com/Defend-AI-Tech-Inc/agent-discover-scanner
@@ -192,7 +302,7 @@ cd agent-discover-scanner/demo
 agent-discover-scanner scan-all ./sample-repo --duration 60
 ```
 
-Expected: 2 CONFIRMED agents, 1 GHOST agent (shadow-agent — running with no source code).
+Expected output: 2 CONFIRMED agents (crewai-agent, langchain-agent), 1 GHOST agent (shadow-agent — ntime activity, no source code).
 
 ---
 
@@ -203,7 +313,8 @@ Expected: 2 CONFIRMED agents, 1 GHOST agent (shadow-agent — running with no so
 | Code scanning | Python 3.10+, no additional dependencies |
 | Network monitoring | Python 3.10+, root/sudo |
 | Kubernetes runtime | kubectl, Helm 3+, root/sudo |
-| Endpoint discovery | Python 3.10+, root/sudo |
+| Endpoint discovery | Python 3.10+, osquery (optional — graceful degradation) |
+| Platform upload | DefendAI API key ([defendai.aihttps://defendai.ai)) |
 
 Full Kubernetes setup: `install.sh` handles Helm, runtime monitoring setup, and permissions automatically.
 
@@ -211,18 +322,17 @@ Full Kubernetes setup: `install.sh` handles Helm, runtime monitoring setup, and 
 
 ## DefendAI Platform
 
-AgentDiscover Scanner is the **discovery layer** of the DefendAI platform — the first step in building a governance control plane for autonomous AI.
+AgentDiscover Scanner is the **discovery layer** of the DefendAI platform.
 
 | Component | Status | Description |
 |---|---|---|
-| **AgentDiscover Scanner** | ✅ Open Source | Discover and classify AI agents |
-| **defendai-agent** | 🧪 Beta | MITM proxy for AI traffic governance |
+| **AgentDiscover Scanner** | ✅ Open Source | Discover and classify AI agents across your environment |
+| **defendai-agent** | 🧪 Beta | MITM proxy for real-time AI traffic inspection and policy enforcement |
+| **Correlation Engine** | ✅ Available | Cross-machine identity resolution and behavioral drift detection |
 | **Policy Engine** | 🚧 Coming Soon | Define and enforce agent behavior rules |
 | **DefendAI Platform** | 💼 Enterprise | Full lifecycle governance for autonomous AI |
 
-[defendai.ai](https://defendai.ai) · [playground.defendai.ai](https://playground.defendai.ai) · [support@defendai.ai](mailto:support@defendai.ai)
-
----
+[defendai.ai](https://defendai.ai) · [playground.defendai.ai](https://playground.defendai.ai) · [support@defendai.ai](mailto:support@defen
 
 ## Contributing
 

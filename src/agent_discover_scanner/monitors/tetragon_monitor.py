@@ -40,6 +40,7 @@ class TetragonMonitor:
         duration: Optional[int] = None,
         stop_event: Optional[threading.Event] = None,
         tetragon_export_file: Optional[Union[str, Path]] = None,
+        verbose: bool = False,
     ) -> Iterator[TetragonEvent]:
         """
         Stream Tetragon events from kubectl logs or from a local export file.
@@ -159,18 +160,29 @@ class TetragonMonitor:
                         pass
             return
 
-        # Default: stream via kubectl logs
+        # Default: stream via kubectl logs (stderr captured so "connection to server" etc. not shown)
         get_pod_cmd = [
             "kubectl", "get", "pods",
             "-n", self.namespace,
             "-l", "app.kubernetes.io/name=tetragon",
             "-o", "jsonpath={.items[0].metadata.name}",
         ]
-        
         try:
-            pod_name = subprocess.check_output(get_pod_cmd, text=True).strip()
+            result = subprocess.run(
+                get_pod_cmd,
+                capture_output=True,
+                text=True,
+            )
+            if result.returncode != 0:
+                if verbose:
+                    console.print("[red]Error: Could not find Tetragon pods. Is Tetragon installed?[/red]")
+                raise subprocess.CalledProcessError(result.returncode, get_pod_cmd, result.stdout, result.stderr)
+            pod_name = (result.stdout or "").strip()
+            if not pod_name:
+                if verbose:
+                    console.print("[red]Error: Could not find Tetragon pods. Is Tetragon installed?[/red]")
+                raise subprocess.CalledProcessError(1, get_pod_cmd, result.stdout, result.stderr)
         except subprocess.CalledProcessError:
-            console.print("[red]Error: Could not find Tetragon pods. Is Tetragon installed?[/red]")
             raise
         
         cmd = [
@@ -225,9 +237,11 @@ class TetragonMonitor:
                         break
 
         except KeyboardInterrupt:
-            console.print("\n[yellow]Monitoring stopped by user[/yellow]")
+            if verbose:
+                console.print("\n[yellow]Monitoring stopped by user[/yellow]")
         except subprocess.CalledProcessError as e:
-            console.print(f"[red]Error running kubectl: {e}[/red]")
+            if verbose:
+                console.print(f"[red]Error running kubectl: {e}[/red]")
             raise
         finally:
             if process is not None:
@@ -327,6 +341,7 @@ def monitor_k8s(
     output_format: str = "console",
     stop_event: Optional[threading.Event] = None,
     tetragon_export_file: Optional[Union[str, Path]] = None,
+    verbose: bool = False,
 ):
     """
     Monitor Kubernetes cluster for AI agent activity.
@@ -361,6 +376,7 @@ def monitor_k8s(
             duration=duration,
             stop_event=stop_event,
             tetragon_export_file=tetragon_export_file,
+            verbose=verbose,
         ):
             detection = monitor.detect_llm_connections(event)
 

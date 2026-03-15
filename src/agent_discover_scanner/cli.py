@@ -585,6 +585,11 @@ def scan_all(
         "--wawsdb-url",
         help="DefendAI platform base URL",
     ),
+    platform_interval: int = typer.Option(
+        5,
+        "--platform-interval",
+        help="Upload to platform every N correlation cycles in daemon mode (default 5, ~2.5 min). Only when --daemon and --platform are set.",
+    ),
 ):
     """
     Run a full 4-layer AI agent scan and correlate all findings.
@@ -941,6 +946,12 @@ def scan_all(
     else:
         # Daemon mode: run layers continuously and update correlation
         console.print("[bold yellow]Daemon mode enabled: running continuous monitoring[/bold yellow]\n")
+        if platform:
+            interval_sec = max(1, platform_interval) * 30
+            console.print(
+                f"[dim]Platform sync every {interval_sec}s "
+                f"({max(1, platform_interval)} correlation cycles)[/dim]\n"
+            )
 
         def signal_handler(signum, frame):
             console.print(f"\n[yellow]Received signal {signum}, shutting down daemon...[/yellow]")
@@ -1117,10 +1128,51 @@ def scan_all(
         def correlation_daemon():
             last_report_json = None
             backoff_sec = _DAEMON_BACKOFF_INITIAL_SEC
+            cycle_count = 0
+            upload_interval = max(1, platform_interval)
             try:
                 while not stop_event.is_set():
                     try:
                         report_local = run_correlation_once()
+                        cycle_count += 1
+
+                        # Upload every N cycles if platform enabled
+                        if platform and cycle_count % upload_interval == 0:
+                            try:
+                                network_for_upload = []
+                                try:
+                                    if layer2_json.exists():
+                                        data = json.loads(layer2_json.read_text())
+                                        network_for_upload = (data.get("findings") or []) + (
+                                            data.get("connections") or []
+                                        )
+                                except Exception:
+                                    pass
+                                l4 = (
+                                    CorrelationEngine.load_layer4_findings(layer4_json)
+                                    if layer4_json.exists()
+                                    else []
+                                )
+                                upload_scan_results(
+                                    report_local,
+                                    hostname=socket.gethostname(),
+                                    api_key=api_key,
+                                    tenant_token=tenant_token,
+                                    wawsdb_url=wawsdb_url,
+                                    network_findings=network_for_upload,
+                                    layer4_findings=l4,
+                                )
+                                logger.info(
+                                    "Platform upload completed (cycle %d)",
+                                    cycle_count,
+                                )
+                            except Exception as e:
+                                logger.warning(
+                                    "Platform upload failed (cycle %d): %s",
+                                    cycle_count,
+                                    e,
+                                )
+
                         if format == "json":
                             current_json = json.dumps(report_local, sort_keys=True)
                         else:

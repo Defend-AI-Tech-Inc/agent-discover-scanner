@@ -88,6 +88,7 @@ def format_agents_for_upload(
     scan_results: Dict[str, Any],
     network_findings: Optional[List[Any]] = None,
     layer4_findings: Optional[List[Any]] = None,
+    mcp_result: Optional[Dict[str, Any]] = None,
 ) -> List[Dict[str, Any]]:
     """
     Convert scanner inventory report into /scanner/ingest agents[] format.
@@ -217,6 +218,21 @@ def format_agents_for_upload(
             if saas_connections:
                 metadata["saas_connections"] = saas_connections
 
+            try:
+                if mcp_result and mcp_result.get("servers"):
+                    metadata["mcp_connections"] = mcp_result
+                    mcp_saas = mcp_result.get("saas_via_mcp", [])
+                    if mcp_saas:
+                        existing = list(saas_connections.get("detected", []))
+                        for s in mcp_saas:
+                            if s not in existing:
+                                existing.append(s)
+                        if isinstance(saas_connections, dict):
+                            saas_connections = {**saas_connections, "detected": existing}
+                            metadata["saas_connections"] = saas_connections
+            except Exception:
+                pass
+
             agents.append(
                 {
                     "name": name,
@@ -227,6 +243,7 @@ def format_agents_for_upload(
                     "username": _username,
                     "os": _os,
                     "saas_connections": metadata.get("saas_connections") or {},
+                    "mcp_connections": metadata.get("mcp_connections") or {},
                     "metadata": metadata,
                 }
             )
@@ -242,6 +259,9 @@ def upload_scan_results(
     wawsdb_url: str = _DEFAULT_WAWSDB_URL,
     network_findings: Optional[List[Any]] = None,
     layer4_findings: Optional[List[Any]] = None,
+    high_risk_agent: Optional[Dict[str, Any]] = None,
+    mcp_result: Optional[Dict[str, Any]] = None,
+    scan_dir: Optional[str] = None,
 ) -> bool:
     """
     Upload scan results to DefendAI platform.
@@ -295,14 +315,38 @@ def upload_scan_results(
     else:
         print("💡 No credentials provided — uploading to DefendAI sandbox for preview")
 
+    if mcp_result is None:
+        try:
+            from agent_discover_scanner.mcp_detector import detect_mcp_servers
+            mcp_result = detect_mcp_servers(
+                scan_dir=scan_dir,
+                network_findings=network_findings,
+                layer4_findings=layer4_findings,
+            )
+        except Exception:
+            mcp_result = {}
+
     agents = format_agents_for_upload(
         scan_results,
         network_findings=network_findings,
         layer4_findings=layer4_findings,
+        mcp_result=mcp_result,
     )
     if not agents:
         # Nothing to upload; treat as success from the caller's perspective
         return True
+
+    if high_risk_agent is None:
+        try:
+            from agent_discover_scanner.high_risk_agents import (
+                detect_all_high_risk_agents,
+            )
+            high_risk_agent = detect_all_high_risk_agents(
+                layer4_findings=layer4_findings,
+                network_findings=network_findings,
+            )
+        except Exception:
+            high_risk_agent = {}
 
     scan_id = str(uuid4())
     url = f"{resolved_wawsdb_url.rstrip('/')}/scanner/ingest"
@@ -316,11 +360,14 @@ def upload_scan_results(
         "scanner_version": _metadata.version("agent-discover-scanner"),
     }
 
+    # wawsdb: ScannerAgent (proxy_router.py) should include high_risk_agent: dict = {}
     payload = {
         "hostname": hostname,
         "scan_id": scan_id,
         "agents": agents,
         "scanner_context": scanner_context,
+        "high_risk_agent": high_risk_agent or {},
+        "mcp_connections": mcp_result or {},
     }
 
     headers = {

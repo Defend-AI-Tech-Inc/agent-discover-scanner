@@ -977,6 +977,7 @@ def scan_all(
         return report
 
     # Non-daemon: run once with layers in parallel
+    hra_result: dict = {}
     if not daemon:
         with ThreadPoolExecutor(max_workers=4) as executor:
             futures = []
@@ -987,6 +988,72 @@ def scan_all(
             futures.append(executor.submit(run_layer2_once))
             futures.append(executor.submit(run_layer3_once))
             wait(futures)
+
+        from agent_discover_scanner.high_risk_agents import detect_all_high_risk_agents
+
+        try:
+            hra_result = detect_all_high_risk_agents(
+                layer4_findings=layer4_findings,
+                network_findings=network_findings,
+            )
+            if hra_result.get("is_high_risk"):
+                for finding in hra_result.get("findings", []):
+                    confidence = finding.get("confidence", "medium")
+                    if confidence == "confirmed":
+                        console.print(
+                            f"\n[bold red]🚨 HIGH-RISK AGENT CONFIRMED: "
+                            f"{finding['display_name']}[/bold red]"
+                        )
+                        console.print(f"[red]   {finding['description']}[/red]")
+                        console.print(
+                            f"[red]   Capabilities: "
+                            f"{', '.join(finding.get('capabilities', []))}[/red]\n"
+                        )
+                    elif confidence == "high":
+                        console.print(
+                            f"\n[yellow]⚠ HIGH-RISK AGENT DETECTED (high confidence): "
+                            f"{finding['display_name']}[/yellow]"
+                        )
+                        console.print(
+                            f"[yellow]   {finding['description']}[/yellow]\n"
+                        )
+        except Exception:
+            hra_result = {}
+
+        from agent_discover_scanner.mcp_detector import detect_mcp_servers
+
+        try:
+            mcp_result = detect_mcp_servers(
+                scan_dir=str(scan_root),
+                network_findings=network_findings,
+                layer4_findings=layer4_findings,
+            )
+            if mcp_result.get("servers"):
+                if mcp_result.get("has_local_scripts"):
+                    console.print(
+                        "[bold red]⚠ Local MCP script detected — "
+                        "unknown code with tool access[/bold red]"
+                    )
+                unverified = [
+                    s
+                    for s in mcp_result.get("servers", [])
+                    if not s.get("publisher_verified") and not s.get("is_local_script")
+                ]
+                for s in unverified[:3]:
+                    console.print(
+                        f"[yellow]⚠ Unverified MCP server: "
+                        f"{s.get('server_name', '?')} "
+                        f"({s.get('vendor', 'unknown vendor')}) — "
+                        f"not from a verified publisher[/yellow]"
+                    )
+                if mcp_result.get("network_detected"):
+                    console.print(
+                        "[dim]  ℹ MCP connections detected via network — "
+                        "likely configured via AI client UI "
+                        "(no local config file)[/dim]"
+                    )
+        except Exception:
+            mcp_result = {}
 
         report = run_correlation_once()
         if platform:
@@ -1008,6 +1075,9 @@ def scan_all(
                     wawsdb_url=wawsdb_url,
                     network_findings=network_for_upload,
                     layer4_findings=layer4_findings,
+                    high_risk_agent=hra_result,
+                    mcp_result=mcp_result,
+                    scan_dir=str(scan_root),
                 )
             except Exception:
                 logger.warning("DefendAI platform upload failed unexpectedly", exc_info=True)
@@ -1233,6 +1303,27 @@ def scan_all(
                                         if layer4_json.exists()
                                         else []
                                     )
+                                    try:
+                                        from agent_discover_scanner.high_risk_agents import (
+                                            detect_all_high_risk_agents,
+                                        )
+                                        hra_upload = detect_all_high_risk_agents(
+                                            layer4_findings=l4,
+                                            network_findings=network_for_upload,
+                                        )
+                                    except Exception:
+                                        hra_upload = {}
+                                    try:
+                                        from agent_discover_scanner.mcp_detector import (
+                                            detect_mcp_servers,
+                                        )
+                                        mcp_upload = detect_mcp_servers(
+                                            scan_dir=str(scan_root),
+                                            network_findings=network_for_upload,
+                                            layer4_findings=l4,
+                                        )
+                                    except Exception:
+                                        mcp_upload = {}
                                     upload_scan_results(
                                         report_local,
                                         hostname=socket.gethostname(),
@@ -1241,6 +1332,9 @@ def scan_all(
                                         wawsdb_url=wawsdb_url,
                                         network_findings=network_for_upload,
                                         layer4_findings=l4,
+                                        high_risk_agent=hra_upload,
+                                        mcp_result=mcp_upload,
+                                        scan_dir=str(scan_root),
                                     )
                                     last_uploaded_hash = current_hash
                                     logger.info(
@@ -1315,6 +1409,9 @@ def scan_all(
                     api_key=api_key,
                     tenant_token=tenant_token,
                     wawsdb_url=wawsdb_url,
+                    high_risk_agent=None,
+                    mcp_result=None,
+                    scan_dir=str(scan_root),
                 )
             except Exception:
                 logger.warning("DefendAI platform upload failed unexpectedly", exc_info=True)

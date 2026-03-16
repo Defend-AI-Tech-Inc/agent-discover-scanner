@@ -75,6 +75,26 @@ def _rotate_file_if_needed(path: Path, max_size_bytes: int, backup_count: int) -
     shutil.move(str(path), f"{path!s}.1")
 
 
+def _inventory_hash(report: dict) -> str:
+    """
+    Compute a stable hash of the current agent inventory.
+    Used to detect whether anything changed since last upload.
+    Hashes the sorted list of agent_ids across all classifications.
+    Returns a hex string.
+    """
+    import hashlib
+
+    try:
+        agents = sorted([
+            a.get("agent_id", "")
+            for cat in report.get("inventory", {}).values()
+            for a in cat
+        ])
+        return hashlib.sha256(json.dumps(agents, sort_keys=True).encode()).hexdigest()
+    except Exception:
+        return ""  # empty hash = always upload on error
+
+
 def version_callback(value: Optional[bool]) -> None:
     """
     Global --version / -v option callback.
@@ -1175,6 +1195,7 @@ def scan_all(
 
         def correlation_daemon():
             last_report_json = None
+            last_uploaded_hash = ""
             backoff_sec = _DAEMON_BACKOFF_INITIAL_SEC
             cycle_count = 0
             upload_interval = max(1, platform_interval)
@@ -1184,42 +1205,55 @@ def scan_all(
                         report_local = run_correlation_once()
                         cycle_count += 1
 
-                        # Upload every N cycles if platform enabled
+                        # Upload every N cycles if platform enabled (only when inventory changed)
                         if platform and cycle_count % upload_interval == 0:
-                            try:
-                                network_for_upload = []
-                                try:
-                                    if layer2_json.exists():
-                                        data = json.loads(layer2_json.read_text())
-                                        network_for_upload = (data.get("findings") or []) + (
-                                            data.get("connections") or []
-                                        )
-                                except Exception:
-                                    pass
-                                l4 = (
-                                    CorrelationEngine.load_layer4_findings(layer4_json)
-                                    if layer4_json.exists()
-                                    else []
-                                )
-                                upload_scan_results(
-                                    report_local,
-                                    hostname=socket.gethostname(),
-                                    api_key=api_key,
-                                    tenant_token=tenant_token,
-                                    wawsdb_url=wawsdb_url,
-                                    network_findings=network_for_upload,
-                                    layer4_findings=l4,
-                                )
+                            current_hash = _inventory_hash(report_local)
+                            if current_hash and current_hash == last_uploaded_hash:
                                 logger.info(
-                                    "Platform upload completed (cycle %d)",
+                                    "Inventory unchanged — skipping upload (cycle %d)",
                                     cycle_count,
                                 )
-                            except Exception as e:
-                                logger.warning(
-                                    "Platform upload failed (cycle %d): %s",
-                                    cycle_count,
-                                    e,
+                                console.print(
+                                    f"[dim]↩ No changes detected — platform sync skipped "
+                                    f"(cycle {cycle_count})[/dim]"
                                 )
+                            else:
+                                try:
+                                    network_for_upload = []
+                                    try:
+                                        if layer2_json.exists():
+                                            data = json.loads(layer2_json.read_text())
+                                            network_for_upload = (data.get("findings") or []) + (
+                                                data.get("connections") or []
+                                            )
+                                    except Exception:
+                                        pass
+                                    l4 = (
+                                        CorrelationEngine.load_layer4_findings(layer4_json)
+                                        if layer4_json.exists()
+                                        else []
+                                    )
+                                    upload_scan_results(
+                                        report_local,
+                                        hostname=socket.gethostname(),
+                                        api_key=api_key,
+                                        tenant_token=tenant_token,
+                                        wawsdb_url=wawsdb_url,
+                                        network_findings=network_for_upload,
+                                        layer4_findings=l4,
+                                    )
+                                    last_uploaded_hash = current_hash
+                                    logger.info(
+                                        "Platform upload completed (cycle %d)",
+                                        cycle_count,
+                                    )
+                                except Exception as e:
+                                    logger.warning(
+                                        "Platform upload failed (cycle %d): %s",
+                                        cycle_count,
+                                        e,
+                                    )
+                                    # Don't update last_uploaded_hash on failure so next cycle retries
 
                         if format == "json":
                             current_json = json.dumps(report_local, sort_keys=True)

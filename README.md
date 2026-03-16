@@ -27,7 +27,7 @@
 
 👻 GHOST AGENT DETECTED
    Workload:   shadow-agent (Pod/kube-system)
-   C api.anthropic.com — LIVE
+   Connected:  api.anthropic.com — LIVE
    SaaS:       anthropic — confirmed  |  gcp — active socket
    Blast radius: HIGH (cloud provider access confirmed)
    Source code: None found in scanned repositories
@@ -44,7 +44,7 @@ An AI system is making real API calls — consuming tokens, potentially accessin
 
 Most security tools tell you what's in your code. AgentDiscover Scanner tells you what's **actually running** — and crucially, what's running that has **no business being there**.
 
-The GHOST classification is unique: an AI system observed making real API calls with zero corresponding source code. No other static analysis tool can find this. No SIEM will alert on it. It oen you watch the runtime and cross-reference it against your codebase simultaneously.
+The GHOST classification is unique: an AI system observed making real API calls with zero corresponding source code. No other static analysis tool can find this. No SIEM will alert on it. It only appears when you watch the runtime and cross-reference it against your codebase simultaneously.
 
 As of v2.3.0, every detected agent also carries a **SaaS blast radius** — a live-observed map of which services it's actively connected to, derived from network traffic not just configuration files.
 
@@ -66,6 +66,7 @@ crewai-agent (CONFIRMED)
 | 👻 **GHOST** | Runtime AI activity — no source code found | **Critical** |
 | ✅ **CONFIRMED** | Detected in code AND observed running | High |
 | ⚠️ **UNKNOWN** | Found in code, not yet observed at runtime | Medium |
+| 🖥️ **SHADOW AI** | Known app using AI without governance | Medium |
 | ☠️ **ZOMBIE** | Was active, no longer observed | Low |
 
 **GHOST agents are the most dangerous finding.** An AI system is making real API calls — consuming tokens, potentially accessing sensitivneering team has no record of it. No code, no deployment, no owner.
@@ -111,7 +112,7 @@ Kernel-level visibility into pod behavior via Tetragon. Identifies which workloa
 Scans developer machines, CI/CD runners, and workstations via osquery. Finds installed AI packages, desktop AI applications (ChatGPT Desktop, Claude Desktop, Cursor, GitHub Copilot), active connections, browser-based AI usage, and VSCode extensions.
 
 ### SaaS Blast Radius Detection (v2.3.0+)
-After correlatagent receives a `saas_connections` profile built from all four layers:
+After correlation, each agent receives a `saas_connections` profile built from all four layers:
 
 ```json
 {
@@ -147,18 +148,20 @@ After correlatagent receives a `saas_connections` profile built from all four la
 🔗 Correlating findings...
 ✓ Correlation complete
 
-🤖 Autonomous Agent────────┬───────┬─────────────────────────────────────────────────────────────────┐
-│ Classification┤
-│ CONFIRMED      │   2   │ Active — detected in code and observed at runtime               │
-│ UNKNOWN        │   3   │ Code found — not yet observed at r          │
-│ ZOMBIE         │   0   │ Inactive — code exists but no recent activity                   │
-│ GHOST          │   1   │ ⚠ Critical — runtime activity with no s)  │
-└────────────────┴───────┴─────────────────────────────────────────────────────────────────┘
+🤖 Autonomous Agent Inventory
+
+ Classification  | Count | Description
+-----------------|-------|--------------------------------------------------
+ CONFIRMED       |   2   | Active — detected in code and observed at runtime
+ UNKNOWN         |   3   | Code found — not yet observed at runtime
+ SHADOW AI       |   0   | Known app using AI — review for governance
+ ZOMBIE          |   0   | Inactive — code exists but no recent activity
+ GHOST           |   1   | ⚠ Critical — runtime activity with no source code
 
 Risk Breakdown:
-  ● Critical: 2
-  ● High:     3
-  ● Medium:   1
+  ● Critical: 1
+  ● High:     2
+  ● Medium:   3
   ● Low:      0
 
 ✅ Scan complete — results saved to ./defendai-results
@@ -177,9 +180,15 @@ agent-discover-scanner scan-all /path/to/code \
   --platform \
   --platform-interval 5    # upload to platform every ~2.5 minutes
 ```
+With `--platform`, the daemon syncs to the DefendAI platform every N correlation 
+cycles (default: every 5 cycles ≈ 2.5 minutes) and always uploads a final snapshot 
+on shutdown.
 
-With `--platform`, the daemon syncs to the DefendAI plaservice.sh /path/to/code
+Install as a systemd service:
+```bash
+sudo bash deployment/systemd/install-service.sh /path/to/code
 systemctl status defendai-scanner
+
 ```
 
 ---

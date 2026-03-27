@@ -137,6 +137,52 @@ After correlation, each agent receives a `saas_connections` profile built from a
 
 ---
 
+## High-Risk Agent Detection (v2.4.0+)
+
+The scanner detects autonomous agent platforms that carry
+systemic security risk by design — not misconfigurations,
+but architecture.
+
+**OpenClaw** (formerly Clawdbot/Moltbot) is the primary target.
+It has full filesystem access, terminal execution, email and
+messaging integration, and runs as a persistent background daemon.
+CVE-2026-25253 CVSS 8.8. Gartner: "insecure by default."
+Microsoft: "treat as untrusted code execution."
+
+Detection uses corroborated signals — never a single port number:
+```
+🚨 HIGH-RISK AGENT CONFIRMED: OpenClaw
+   Autonomous agent with system-level access — filesystem,
+   terminal, email, and messaging integration.
+   Capabilities: filesystem, terminal, email, browser, messaging
+```
+
+## MCP Server Detection (v2.4.0+)
+
+MCP (Model Context Protocol) is the integration layer between
+AI agents and enterprise SaaS. Supported by Claude, ChatGPT,
+Gemini, Copilot, Cursor, and VS Code.
+
+The scanner detects MCP across all AI clients and claeach server by publisher verification:
+```
+⚠ Unverified MCP server: servicenow
+  (echelon-ai-labs — not published by ServiceNow)
+
+✓ Verified: @salesforce/mcp-server (Salesforce official)
+```
+
+**Non-developer detection:** Financial analysts connecting
+ChatGPT Teams to Salesforce via UI leave no local config file.
+The scanner detects this via Layer 2 network traffic — the only
+tool that catches this pattern.
+
+Risk escalation:
+- Unverified MCP server → HIGH
+- MCP filesystem access → HIGH (same as code execution)
+- MCP + production environment → CRITICAL
+- OpenClaw + GHOST → CRITICAL always
+
+
 ## Example Output
 
 ```

@@ -218,6 +218,30 @@ MCP_CONFIG_LOCATIONS = [
         "format": "json",
         "key": "mcpServers",
     },
+    {
+        "client": "Windsurf",
+        "paths": ["~/Library/Application Support/Windsurf/User/settings.json"],
+        "format": "json",
+        "key": "mcpServers",
+    },
+    {
+        "client": "Continue.dev",
+        "paths": ["~/.continue/config.json"],
+        "format": "json",
+        "key": "mcpServers",
+    },
+    {
+        "client": "Zed",
+        "paths": ["~/.config/zed/settings.json"],
+        "format": "json",
+        "key": "mcpServers",
+    },
+    {
+        "client": "Generic Project MCP",
+        "paths": [".cursor/mcp.json"],
+        "format": "json",
+        "key": "mcpServers",
+    },
 ]
 
 
@@ -318,6 +342,35 @@ def _classify_server(
     Returns classification dict with risk, vendor, capabilities.
     """
     try:
+        command = server_config.get("command", "") or ""
+        args = server_config.get("args", []) or []
+        cmd_str = str(command)
+
+        # Local Python script MCP server:
+        # command is a python executable/path and args[0] is a .py script.
+        is_python_cmd = ("python" in cmd_str.lower()) or cmd_str.lower().endswith("python3")
+        script_arg = ""
+        if isinstance(args, list) and args:
+            first_arg = args[0]
+            if isinstance(first_arg, str) and first_arg.lower().endswith(".py"):
+                script_arg = first_arg
+        if is_python_cmd and script_arg:
+            script_name = os.path.basename(os.path.expanduser(script_arg))
+            return {
+                "server_name": server_name,  # keep config key as primary identifier
+                "display_name": script_name,
+                "package": script_name,
+                "vendor": "Unknown",
+                "publisher_verified": False,
+                "risk": "high",
+                "saas": None,
+                "capability": "unknown",
+                "is_local_script": True,
+                "is_remote": False,
+                "client": client_name,
+                "note": "Local Python MCP script",
+            }
+
         if package_name:
             for registry_key, info in VERIFIED_MCP_PUBLISHERS.items():
                 if package_name == registry_key or registry_key in str(package_name):
@@ -352,8 +405,6 @@ def _classify_server(
                         "client": client_name,
                     }
 
-        command = server_config.get("command", "") or ""
-        cmd_str = str(command)
         is_local = (
             cmd_str.startswith(("/", "~", "./", "$HOME"))
             or cmd_str.endswith((".sh", ".py", ".js", ".ts"))
@@ -378,13 +429,13 @@ def _classify_server(
             "package": package_name,
             "vendor": "Community/Unknown",
             "publisher_verified": False,
-            "risk": "high",
+            "risk": "medium",
             "saas": None,
             "capability": "unknown",
             "is_local_script": False,
             "is_remote": False,
             "client": client_name,
-            "note": "Not in verified publisher registry",
+            "note": "Unclassified MCP server entry",
         }
     except Exception:
         return {
@@ -392,7 +443,7 @@ def _classify_server(
             "package": package_name,
             "vendor": "Unknown",
             "publisher_verified": False,
-            "risk": "high",
+            "risk": "medium",
             "saas": None,
             "capability": "unknown",
             "is_local_script": False,
@@ -452,6 +503,9 @@ def detect_mcp_servers(
                     classification = _classify_server(
                         server_name, package, server_config, location["client"]
                     )
+                    # Always emit every entry from mcpServers using the config key as
+                    # the primary server identifier.
+                    classification["server_name"] = server_name
                     all_servers.append(classification)
                 break
     except Exception:
@@ -530,6 +584,79 @@ def detect_mcp_servers(
                             ),
                         })
                     break
+    except Exception:
+        pass
+
+    # Process-based detection catches MCP servers started programmatically
+    # without any local config files.
+    try:
+        import psutil
+
+        process_markers = ("mcp", "model-context-protocol", "@modelcontextprotocol")
+        for proc in psutil.process_iter(["name", "cmdline"]):
+            try:
+                name = (proc.info.get("name") or "").lower()
+                if name not in ("python", "python3", "node", "nodejs"):
+                    continue
+                cmd_tokens = [str(t) for t in (proc.info.get("cmdline") or []) if t]
+                cmdline = " ".join(cmd_tokens).lower()
+                if not cmdline:
+                    continue
+                if any(marker in cmdline for marker in process_markers):
+                    derived_server_name = f"process:{name}"
+                    derived_package = None
+
+                    # Prefer script filename for python-based MCP servers.
+                    script_token = next(
+                        (t for t in cmd_tokens if t.lower().endswith(".py")),
+                        None,
+                    )
+                    if script_token:
+                        base = os.path.basename(os.path.expanduser(script_token))
+                        stem = os.path.splitext(base)[0]
+                        derived_server_name = stem.replace("_", "-")
+                        derived_package = base
+                    else:
+                        # Otherwise extract MCP package/module token.
+                        pkg_token = next(
+                            (
+                                t
+                                for t in cmd_tokens
+                                if "mcp" in t.lower() or "@modelcontextprotocol" in t.lower()
+                            ),
+                            None,
+                        )
+                        if pkg_token:
+                            low = pkg_token.lower()
+                            if low.startswith("@modelcontextprotocol/"):
+                                short = low.split("/", 1)[1]
+                                if short.startswith("server-"):
+                                    short = short[len("server-") :]
+                                derived_server_name = short
+                            else:
+                                cleaned = os.path.basename(pkg_token).lower()
+                                cleaned = cleaned.replace("@", "").replace("/", "-")
+                                derived_server_name = cleaned
+                            derived_package = pkg_token
+
+                    all_servers.append(
+                        {
+                            "server_name": derived_server_name,
+                            "package": derived_package,
+                            "vendor": "Unknown",
+                            "publisher_verified": False,
+                            "risk": "high",
+                            "saas": None,
+                            "capability": "unknown",
+                            "is_local_script": False,
+                            "is_remote": False,
+                            "client": "Process runtime",
+                            "source": "process",
+                            "note": "Detected from running process command line",
+                        }
+                    )
+            except Exception:
+                continue
     except Exception:
         pass
 

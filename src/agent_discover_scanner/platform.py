@@ -370,6 +370,37 @@ def upload_scan_results(
         "mcp_connections": mcp_result or {},
     }
 
+    MAX_UPLOAD_BYTES = 1_000_000  # 1MB
+    truncation_applied = False
+    browser_history_excluded = False
+    try:
+        payload_bytes = len(json.dumps(payload).encode("utf-8"))
+        if payload_bytes > MAX_UPLOAD_BYTES:
+            findings = payload.get("findings")
+            if isinstance(findings, dict):
+                if findings.pop("browser_history", None) is not None:
+                    truncation_applied = True
+                    browser_history_excluded = True
+
+            if len(json.dumps(payload).encode("utf-8")) > MAX_UPLOAD_BYTES:
+                findings = payload.get("findings")
+                if isinstance(findings, dict):
+                    for key, value in list(findings.items()):
+                        if isinstance(value, list) and len(value) > 50:
+                            findings[key] = value[:50]
+                            truncation_applied = True
+                            if isinstance(findings.get(key), list):
+                                findings[f"{key}_truncated"] = True
+    except Exception:
+        # Keep original payload if size guard fails.
+        pass
+
+    if truncation_applied:
+        if browser_history_excluded:
+            print("⚠️  Large scan result truncated for upload (browser history excluded)")
+        else:
+            print("⚠️  Large scan result truncated for upload")
+
     headers = {
         "X-DefendAI-Tenant-Token": resolved_tenant_token,
         "Authorization": f"Bearer {resolved_api_key}",

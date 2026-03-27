@@ -6,6 +6,36 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
+## [2.4.0] - 2026-03-16
+
+### Added
+- **OpenClaw detection** (`high_risk_agents.py`)
+  - Multi-signal corroborated detection — no false positives
+  - Definitive signals: ~/.openclaw/, ~/clawd/SOUL.md, port 18789,
+    npm package, launchd/systemd daemon service
+  - Supports AutoGPT and BabyAGI detection
+  - Console warning fires on confirmed/high confidence only
+  - Never flags based on port alone (no port 8080 used)
+
+- **MCP server detection** (`mcp_detector.py`)
+  - Detects MCP across ALL AI clients: Claude Desktop, Cursor,
+    Gemini CLI, OpenAI Codex, VS Code Copilot
+  - Verified publisher registry: Salesforce, Microsoft, Atlassian,
+    GitHub, Stripe, Anthropic reference implementations
+  - Distinguishes official vendor packages from community forks
+  - Network-based detection catches non-developer users (financial
+    analysts connecting ChatGPT Teams to Salesforce via UI —
+    no local config file required)
+  - Flags unverified MCP servers and local scripts
+  - Merges detected MCP SaaS into sconnections blast radius
+
+- `high_risk_agent` and `mcp_connections` fields in upload payload
+- `high_risk_agent` and `mcp_connections` on AgentInventoryItem
+
+### Changed
+- Risk flags now include `high_risk_agent_detected`,
+  `mcp_filesystem_access`, `mcp_code_execution`,
+  `mcp_database_access`, `mcp_remote_server`
 
 ## [2.3.2] - 2026-03-15
 

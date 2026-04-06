@@ -37,6 +37,7 @@ htmlcov/
 .cursor/
 .vscode/
 .idea/
+*.code-workspace
 *.swp
 *.swo
 *~

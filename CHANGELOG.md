@@ -6,6 +6,22 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
+
+## [2.5.0] - 2026-04-06
+
+### Added
+- `scan_runner.execute_scan_all` — shared implementation for `scan-all` and `audit`
+- **`audit`** command — runs full pipeline into `OUTPUT/raw/`, then writes `aibom.json`,
+  `ghost-agents.md`, `mcp-report.md`, and `summary.md`
+- **`aibom`** module — best-effort CycloneDX 1.6–oriented export from `agent_inventory.json`
+- **`scan-all --layer`** — run a single facet: `code`, `network`, `k8s`, `endpoint`, or `mcp`
+- **`agent-discover`** entry point (alias for `agent-discover-scanner`)
+- **`scan --format text`** — alias for `table` (unchanged default)
+
+### Changed
+- README: accuracy fixes (commands, CI example, requirements table, MCP severity wording),
+  documents `audit`, `--layer`, dual CLI names, and real `scan-all --format` behavior
+
 ## [2.4.0] - 2026-03-16
 
 ### Added

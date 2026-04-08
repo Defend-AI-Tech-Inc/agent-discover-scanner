@@ -1,6 +1,8 @@
 import ast
 import json
 import logging
+import os
+import sys
 from importlib.metadata import version as _pkg_version
 from pathlib import Path
 from typing import Optional
@@ -597,6 +599,16 @@ def scan_all(
     and optionally upload results to the DefendAI platform.
     """
     from agent_discover_scanner.scan_runner import execute_scan_all
+
+    if sys.platform == "darwin" and hasattr(os, "geteuid") and os.geteuid() == 0:
+        typer.echo(
+            "Warning: running with sudo on macOS is not recommended. "
+            "If you pass a PATH with '~', it may resolve to root's home. "
+            "Prefer running without sudo when possible.",
+            err=True,
+        )
+
+    path = os.path.expanduser(path)
 
     execute_scan_all(
         path=path,

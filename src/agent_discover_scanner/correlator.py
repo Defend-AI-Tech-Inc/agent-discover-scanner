@@ -568,11 +568,14 @@ class CorrelationEngine:
         layer4_findings = layer4_findings or []
         layer3_findings = layer3_findings or []
 
-        # Layer 2: active providers from network_findings
+        # Layer 2: active providers from network_findings.
+        #
+        # IMPORTANT: A runtime-only process/workload is only eligible for GHOST if we have a
+        # confirmed active network connection to a known AI provider endpoint.
         active_providers = {}
         for nf in network_findings:
             provider = (nf.get("provider") or "unknown").lower()
-            if provider in cls._PROVIDERS or provider != "unknown":
+            if provider in cls._PROVIDERS:
                 active_providers[provider] = {
                     "process": nf.get("process_name", "unknown"),
                     "timestamp": nf.get("timestamp"),
@@ -755,7 +758,8 @@ class CorrelationEngine:
                 pass
             inventory[classification].append(ghost_item)
 
-        # Layer 3 GHOST: any pod/workload with no matching Layer 1 code finding (regardless of provider).
+        # Layer 3 GHOST: any pod/workload with no matching Layer 1 code finding,
+        # but only when there is confirmed Layer 2 provider traffic.
         # Deduplicate by workload name (not pod), keeping the most recent pod per workload.
         workload_to_l3: Dict[Tuple[str, str], Dict] = {}  # (namespace, workload_or_pod) -> best l3 by timestamp
         for l3 in layer3_findings:
@@ -768,6 +772,8 @@ class CorrelationEngine:
                 workload_to_l3[workload_key] = l3
         for l3 in workload_to_l3.values():
             provider = (l3.get("provider") or "unknown").lower()
+            if provider not in active_providers:
+                continue
             ghost_id = f"ghost:{provider}:{l3.get('workload', l3.get('pod', ''))}"
             ghost_item = AgentInventoryItem(
                 agent_id=ghost_id,
@@ -790,6 +796,8 @@ class CorrelationEngine:
 
         for provider, l4 in layer4_by_provider.items():
             if provider in seen_providers:
+                continue
+            if provider not in active_providers:
                 continue
             seen_providers.add(provider)
             process_name = l4.get("process_name") or l4.get("process") or ""

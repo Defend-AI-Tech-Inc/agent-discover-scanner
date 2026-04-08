@@ -15,6 +15,13 @@
 
 set -e
 
+# Guard: never run with sudo on macOS (Homebrew/osquery + ~ expansion issues)
+if [ "$EUID" -eq 0 ] && [[ "$OSTYPE" == "darwin"* ]]; then
+  echo "Error: do not run this script with sudo on macOS."
+  echo "Run without sudo: bash install.sh"
+  exit 1
+fi
+
 # Colors for output
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -248,14 +255,29 @@ if [ "$INSTALL_FROM_SOURCE" = true ]; then
     fi
 else
     log_info "Installing from PyPI..."
-    #$PYTHON_CMD -m pip install --upgrade agent-discover-scanner
-    if command_exists pipx; then
+    if [[ "$OSTYPE" == "darwin"* ]]; then
+        # macOS: prefer pipx to avoid PEP 668 externally-managed-environment issues
+        if ! command_exists brew; then
+            log_error "Homebrew not found. Install from https://brew.sh"
+            exit 1
+        fi
+        if ! command_exists pipx; then
+            log_info "Installing pipx via Homebrew..."
+            brew install pipx
+        fi
+        log_info "Installing agent-discover-scanner via pipx..."
         pipx install agent-discover-scanner
-    elif $PYTHON_CMD -m pip install --upgrade agent-discover-scanner 2>/dev/null; then
-        true
+        pipx ensurepath
     else
-        # Externally managed environment (Debian/Ubuntu 23.04+)
-        $PYTHON_CMD -m pip install --upgrade agent-discover-scanner --break-system-packages
+        # Linux: use pipx if available, otherwise pip (with break-system-packages fallback)
+        if command_exists pipx; then
+            pipx install agent-discover-scanner
+        elif $PYTHON_CMD -m pip install --upgrade agent-discover-scanner 2>/dev/null; then
+            true
+        else
+            # Externally managed environment (Debian/Ubuntu 23.04+)
+            $PYTHON_CMD -m pip install --upgrade agent-discover-scanner --break-system-packages
+        fi
     fi
 fi
 
@@ -535,19 +557,19 @@ echo ""
 
 echo "Quick start commands:"
 echo ""
-echo "  # Scan local machine (code + endpoint)"
-echo "  agent-discover-scanner scan --layers 1,4"
+echo "  # Scan a repository (all layers available on this machine)"
+echo "  agent-discover-scanner scan-all ~/path/to/repo --output ~/defendai-results"
 echo ""
 
 if [ "$INSTALL_LAYER_4" = true ]; then
     echo "  # Scan just this endpoint (Shadow AI)"
-    echo "  agent-discover-scanner layer4"
+    echo "  agent-discover-scanner endpoint"
     echo ""
 fi
 
 if [ "$K8S_AVAILABLE" = true ] && ([ "$INSTALL_LAYER_2" = true ] || [ "$INSTALL_LAYER_3" = true ]); then
     echo "  # Full scan (all layers)"
-    echo "  agent-discover-scanner scan --layers 1,2,3,4"
+    echo "  agent-discover-scanner scan-all ~/path/to/repo --output ~/defendai-results"
     echo ""
 fi
 
@@ -557,3 +579,8 @@ echo ""
 
 log_success "Happy scanning!"
 echo ""
+
+echo "Installation complete. Verify with:"
+echo "  agent-discover-scanner --version"
+echo "  osquery --version"
+echo "  which agent-discover-scanner"

@@ -6,11 +6,11 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-User=root
+User=defendai
 ExecStart=/usr/local/bin/agent-discover-scanner scan-all \
     /opt/defendai/scan-path \
     --daemon \
-    --output /var/log/defendai \
+    --output /opt/defendai/defendai-results \
     --layer3-file /var/run/cilium/tetragon/tetragon.log
 Restart=on-failure
 RestartSec=30
@@ -20,7 +20,7 @@ SyslogIdentifier=defendai-scanner
 
 # Hardening
 ProtectSystem=strict
-ReadWritePaths=/var/log/defendai /var/run/cilium/tetragon
+ReadWritePaths=/opt/defendai/defendai-results /var/run/cilium/tetragon
 NoNewPrivileges=false
 
 [Install]

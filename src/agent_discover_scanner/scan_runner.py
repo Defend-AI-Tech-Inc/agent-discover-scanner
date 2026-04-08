@@ -284,10 +284,16 @@ def execute_scan_all(
                 service = (conn.get("service") or "").lower()
                 host = (conn.get("remote_host") or "").lower()
                 provider = None
-                for slug in providers:
-                    if slug in service or slug in host:
-                        provider = slug
-                        break
+                try:
+                    provider = CorrelationEngine._infer_provider_from_address(host)  # type: ignore[attr-defined]
+                except Exception:
+                    provider = None
+                if not provider:
+                    # fallback to prior substring match for any remaining providers
+                    for slug in providers:
+                        if slug in service or slug in host:
+                            provider = slug
+                            break
                 if not provider:
                     continue
                 nf.append(

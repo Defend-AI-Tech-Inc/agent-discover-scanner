@@ -1,0 +1,161 @@
+<svg width="100%" viewBox="0 0 680 620" xmlns="http://www.w3.org/2000/svg">
+<style>
+  .t  { font: 400 14px "Anthropic Sans", ui-sans-serif, system-ui, sans-serif; fill: #3d3d3a; }
+  .ts { font: 400 12px "Anthropic Sans", ui-sans-serif, system-ui, sans-serif; fill: #73726c; }
+  .th { font: 500 14px "Anthropic Sans", ui-sans-serif, system-ui, sans-serif; fill: #3d3d3a; }
+  @media (prefers-color-scheme: dark) {
+    .t  { fill: #c2c0b6; }
+    .ts { fill: #9c9a92; }
+    .th { fill: #c2c0b6; }
+  }
+  .box-gray   { fill: #F1EFE8; stroke: #5F5E5A; }
+  .box-purple { fill: #EEEDFE; stroke: #534AB7; }
+  .box-teal   { fill: #E1F5EE; stroke: #0F6E56; }
+  .box-green  { fill: #EAF3DE; stroke: #3B6D11; }
+  .box-amber  { fill: #FAEEDA; stroke: #854F0B; }
+  .box-red    { fill: #FCEBEB; stroke: #A32D2D; }
+  .box-blue   { fill: #E6F1FB; stroke: #185FA5; }
+  @media (prefers-color-scheme: dark) {
+    .box-gray   { fill: #444441; stroke: #B4B2A9; }
+    .box-purple { fill: #26215C; stroke: #AFA9EC; }
+    .box-teal   { fill: #04342C; stroke: #5DCAA5; }
+    .box-green  { fill: #173404; stroke: #97C459; }
+    .box-amber  { fill: #412402; stroke: #EF9F27; }
+    .box-red    { fill: #501313; stroke: #F09595; }
+    .box-blue   { fill: #042C53; stroke: #85B7EB; }
+    .th-purple  { fill: #AFA9EC; }
+    .th-teal    { fill: #5DCAA5; }
+    .th-green   { fill: #97C459; }
+    .th-amber   { fill: #EF9F27; }
+    .th-red     { fill: #F09595; }
+    .th-blue    { fill: #85B7EB; }
+    .th-gray    { fill: #B4B2A9; }
+    .ts-purple  { fill: #7F77DD; }
+    .ts-teal    { fill: #1D9E75; }
+    .ts-red     { fill: #E24B4A; }
+    .ts-blue    { fill: #378ADD; }
+  }
+  .th-purple { fill: #3C3489; }
+  .th-teal   { fill: #085041; }
+  .th-green  { fill: #27500A; }
+  .th-amber  { fill: #633806; }
+  .th-red    { fill: #791F1F; }
+  .th-blue   { fill: #0C447C; }
+  .th-gray   { fill: #444441; }
+  .ts-purple { fill: #534AB7; }
+  .ts-teal   { fill: #0F6E56; }
+  .ts-red    { fill: #A32D2D; }
+  .ts-blue   { fill: #185FA5; }
+</style>
+<defs>
+  <marker id="arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+    <path d="M2 1L8 5L2 9" fill="none" stroke="context-stroke" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+  </marker>
+</defs>
+
+<!-- YOUR ENVIRONMENT container -->
+<rect x="20" y="20" width="640" height="190" rx="14" class="box-gray" stroke-width="0.5"/>
+<text class="th th-gray" x="40" y="46">your environment</text>
+
+<!-- L1 -->
+<rect x="40" y="58" width="130" height="136" rx="8" class="box-purple" stroke-width="0.5"/>
+<text class="th th-purple" x="105" y="84" text-anchor="middle">layer 1</text>
+<text class="ts ts-purple" x="105" y="100" text-anchor="middle">source code</text>
+<text class="ts ts-purple" x="105" y="116" text-anchor="middle">LangChain</text>
+<text class="ts ts-purple" x="105" y="130" text-anchor="middle">CrewAI</text>
+<text class="ts ts-purple" x="105" y="144" text-anchor="middle">AutoGen</text>
+<text class="ts ts-purple" x="105" y="158" text-anchor="middle">direct HTTP</text>
+<text class="ts ts-purple" x="105" y="172" text-anchor="middle">→ SARIF</text>
+
+<!-- L2 -->
+<rect x="190" y="58" width="130" height="136" rx="8" class="box-teal" stroke-width="0.5"/>
+<text class="th th-teal" x="255" y="84" text-anchor="middle">layer 2</text>
+<text class="ts ts-teal" x="255" y="100" text-anchor="middle">live network</text>
+<text class="ts ts-teal" x="255" y="116" text-anchor="middle">OpenAI</text>
+<text class="ts ts-teal" x="255" y="130" text-anchor="middle">Anthropic</text>
+<text class="ts ts-teal" x="255" y="144" text-anchor="middle">Google AI</text>
+<text class="ts ts-teal" x="255" y="158" text-anchor="middle">vector stores</text>
+<text class="ts ts-teal" x="255" y="172" text-anchor="middle">per-process</text>
+
+<!-- L3 -->
+<rect x="340" y="58" width="130" height="136" rx="8" class="box-teal" stroke-width="0.5"/>
+<text class="th th-teal" x="405" y="84" text-anchor="middle">layer 3</text>
+<text class="ts ts-teal" x="405" y="100" text-anchor="middle">k8s runtime</text>
+<text class="ts ts-teal" x="405" y="116" text-anchor="middle">eBPF / Tetragon</text>
+<text class="ts ts-teal" x="405" y="132" text-anchor="middle">↕</text>
+<text class="ts ts-teal" x="405" y="148" text-anchor="middle">K8s API monitor</text>
+<text class="ts ts-teal" x="405" y="164" text-anchor="middle">managed clusters</text>
+<text class="ts ts-teal" x="405" y="180" text-anchor="middle">EKS · GKE · AKS</text>
+
+<!-- L4 -->
+<rect x="490" y="58" width="150" height="136" rx="8" class="box-purple" stroke-width="0.5"/>
+<text class="th th-purple" x="565" y="84" text-anchor="middle">layer 4</text>
+<text class="ts ts-purple" x="565" y="100" text-anchor="middle">endpoint</text>
+<text class="ts ts-purple" x="565" y="116" text-anchor="middle">osquery</text>
+<text class="ts ts-purple" x="565" y="130" text-anchor="middle">desktop apps</text>
+<text class="ts ts-purple" x="565" y="144" text-anchor="middle">browser history</text>
+<text class="ts ts-purple" x="565" y="158" text-anchor="middle">VS Code ext.</text>
+<text class="ts ts-purple" x="565" y="172" text-anchor="middle">MCP configs</text>
+
+<!-- Arrows down -->
+<line x1="105" y1="194" x2="105" y2="268" stroke="#534AB7" stroke-width="1.5" fill="none" marker-end="url(#arrow)"/>
+<line x1="255" y1="194" x2="255" y2="268" stroke="#0F6E56" stroke-width="1.5" fill="none" marker-end="url(#arrow)"/>
+<line x1="405" y1="194" x2="405" y2="268" stroke="#0F6E56" stroke-width="1.5" fill="none" marker-end="url(#arrow)"/>
+<line x1="565" y1="194" x2="565" y2="268" stroke="#534AB7" stroke-width="1.5" fill="none" marker-end="url(#arrow)"/>
+
+<!-- Correlator -->
+<rect x="20" y="268" width="640" height="64" rx="10" class="box-gray" stroke-width="0.5"/>
+<text class="th th-gray" x="340" y="294" text-anchor="middle">cross-layer correlation engine</text>
+<text class="ts" x="340" y="314" text-anchor="middle">runtime identity resolution · SaaS blast radius · GHOST detection</text>
+
+<!-- Arrow down -->
+<line x1="340" y1="332" x2="340" y2="372" stroke="#888780" stroke-width="1.5" fill="none" marker-end="url(#arrow)"/>
+
+<!-- Classifications -->
+<rect x="20"  y="372" width="116" height="72" rx="8" class="box-red"    stroke-width="0.5"/>
+<text class="th th-red"    x="78"  y="398" text-anchor="middle">GHOST</text>
+<text class="ts ts-red"    x="78"  y="414" text-anchor="middle">runtime only</text>
+<text class="ts ts-red"    x="78"  y="428" text-anchor="middle">no code match</text>
+
+<rect x="150" y="372" width="116" height="72" rx="8" class="box-green"  stroke-width="0.5"/>
+<text class="th th-green"  x="208" y="398" text-anchor="middle">confirmed</text>
+<text class="ts th-green"  x="208" y="414" text-anchor="middle" style="font-weight:400;font-size:12px">code + runtime</text>
+<text class="ts th-green"  x="208" y="428" text-anchor="middle" style="font-weight:400;font-size:12px">both detected</text>
+
+<rect x="280" y="372" width="116" height="72" rx="8" class="box-amber"  stroke-width="0.5"/>
+<text class="th th-amber"  x="338" y="398" text-anchor="middle">unknown</text>
+<text class="ts th-amber"  x="338" y="414" text-anchor="middle" style="font-weight:400;font-size:12px">code found</text>
+<text class="ts th-amber"  x="338" y="428" text-anchor="middle" style="font-weight:400;font-size:12px">not yet running</text>
+
+<rect x="410" y="372" width="116" height="72" rx="8" class="box-teal"   stroke-width="0.5"/>
+<text class="th th-teal"   x="468" y="398" text-anchor="middle">shadow AI</text>
+<text class="ts ts-teal"   x="468" y="414" text-anchor="middle">known app</text>
+<text class="ts ts-teal"   x="468" y="428" text-anchor="middle">using AI</text>
+
+<rect x="540" y="372" width="120" height="72" rx="8" class="box-gray"   stroke-width="0.5"/>
+<text class="th th-gray"   x="600" y="398" text-anchor="middle">zombie</text>
+<text class="ts"           x="600" y="414" text-anchor="middle">was active</text>
+<text class="ts"           x="600" y="428" text-anchor="middle">no longer seen</text>
+
+<!-- Arrow down -->
+<line x1="340" y1="444" x2="340" y2="484" stroke="#888780" stroke-width="1.5" fill="none" marker-end="url(#arrow)"/>
+
+<!-- Outputs -->
+<rect x="20"  y="484" width="200" height="56" rx="8" class="box-gray"   stroke-width="0.5"/>
+<text class="th th-gray" x="120" y="508" text-anchor="middle">agent_inventory.json</text>
+<text class="ts"         x="120" y="526" text-anchor="middle">full structured output</text>
+
+<rect x="240" y="484" width="200" height="56" rx="8" class="box-gray"   stroke-width="0.5"/>
+<text class="th th-gray" x="340" y="508" text-anchor="middle">layer1_code.sarif</text>
+<text class="ts"         x="340" y="526" text-anchor="middle">GitHub Security tab</text>
+
+<rect x="460" y="484" width="200" height="56" rx="8" class="box-purple" stroke-width="0.5"/>
+<text class="th th-purple" x="560" y="508" text-anchor="middle">audit report (v2.5.0)</text>
+<text class="ts ts-purple" x="560" y="526" text-anchor="middle">aibom · ghost-agents · mcp</text>
+
+<!-- Platform -->
+<line x1="340" y1="540" x2="340" y2="578" stroke="#888780" stroke-width="1" stroke-dasharray="4 3" fill="none" marker-end="url(#arrow)"/>
+<text class="ts" x="452" y="564" text-anchor="start">--platform upload</text>
+<rect x="200" y="578" width="280" height="36" rx="8" class="box-blue" stroke-width="0.5"/>
+<text class="th th-blue" x="340" y="600" text-anchor="middle">DefendAI platform · AgentWatch</text>
+</svg>

@@ -38,6 +38,7 @@ class NetworkMonitor:
         'openai.com': 'OpenAI',
         'api.openai.com': 'OpenAI API',
         'chatgpt.com': 'ChatGPT',
+        'chat.openai.com': 'ChatGPT',
         
         # Anthropic
         'anthropic.com': 'Anthropic',
@@ -50,6 +51,7 @@ class NetworkMonitor:
         'googleapis.com': 'Google AI',
         'generativelanguage.googleapis.com': 'Gemini API',
         'bard.google.com': 'Bard',
+        'gemini.google.com': 'Gemini',
         
         # Other AI services
         'cohere.ai': 'Cohere',
@@ -57,10 +59,12 @@ class NetworkMonitor:
         'replicate.com': 'Replicate',
         'huggingface.co': 'HuggingFace',
         'perplexity.ai': 'Perplexity',
+        'api.perplexity.ai': 'Perplexity API',
         
         # Development tools
         'github.com': 'GitHub Copilot',  # Note: matches all GitHub connections, not just Copilot
         'api.github.com': 'GitHub Copilot',  # GitHub API (used by Copilot)
+        'copilot.microsoft.com': 'Microsoft Copilot',
         'api.cursor.sh': 'Cursor',
         'codeium.com': 'Codeium',
     }
@@ -312,20 +316,25 @@ class NetworkMonitor:
         """
         if ip in self._dns_cache:
             return self._dns_cache[ip]
-        
-        # First, try IP-based detection (works even when reverse DNS fails)
-        ip_based_hostname = self._detect_service_by_ip(ip)
-        if ip_based_hostname:
-            self._dns_cache[ip] = ip_based_hostname
-            return ip_based_hostname
-        
-        # Fallback to reverse DNS lookup
+
+        # First: reverse DNS lookup (hostname matching is more reliable than CDN IP matching)
         try:
             hostname = socket.gethostbyaddr(ip)[0]
-            self._dns_cache[ip] = hostname
-            return hostname
+            hostname_l = (hostname or "").lower()
+            # Some CDN / generic reverse DNS results are not actionable; use IP fallback in that case.
+            if hostname_l and ("cloudflare" in hostname_l or hostname_l.endswith(".cdn.cloudflare.net")):
+                ip_based_hostname = self._detect_service_by_ip(ip)
+                if ip_based_hostname:
+                    self._dns_cache[ip] = ip_based_hostname
+                    return ip_based_hostname
+            self._dns_cache[ip] = hostname or ip
+            return hostname or ip
         except (socket.herror, socket.gaierror, socket.timeout):
-            # If DNS fails, return IP (will be checked by IP-based detection)
+            # If DNS fails, try IP-based detection (last resort), else return the IP string
+            ip_based_hostname = self._detect_service_by_ip(ip)
+            if ip_based_hostname:
+                self._dns_cache[ip] = ip_based_hostname
+                return ip_based_hostname
             self._dns_cache[ip] = ip
             return ip
     

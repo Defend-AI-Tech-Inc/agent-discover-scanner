@@ -37,6 +37,8 @@ def write_mcp_markdown(mcp_result: dict[str, Any], dest: Path) -> None:
         "",
         "Detected from configuration, process, registry, and optional network/endpoint context.",
         "",
+        "[MCP] Enforce policies on detected servers → pip install mcpfw-defendai | mcpfw.dev",
+        "",
     ]
     if not servers:
         lines.append("_No MCP servers detected in this run._")

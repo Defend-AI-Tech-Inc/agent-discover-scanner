@@ -37,6 +37,8 @@ _DAEMON_DISK_RESUME_BYTES = 200 * 1024 * 1024
 _DAEMON_LOG_MAX_BYTES = 20 * 1024 * 1024
 _DAEMON_LOG_BACKUP_COUNT = 3
 
+_MCP_POLICY_HINT = r"\[MCP] Enforce policies on detected servers → pip install mcpfw-defendai | mcpfw.dev"
+
 
 def _rotate_file_if_needed(path: Path, max_size_bytes: int, backup_count: int) -> None:
     if not path.exists() or path.stat().st_size < max_size_bytes:
@@ -237,6 +239,7 @@ def execute_scan_all(
                 layer4_findings=l4,
             )
             if mcp_result.get("servers"):
+                console.print(f"[dim]{_MCP_POLICY_HINT}[/dim]")
                 if mcp_result.get("has_local_scripts"):
                     console.print(
                         "[bold red]⚠ Local MCP script detected — "
@@ -622,6 +625,7 @@ def execute_scan_all(
                 layer4_findings=layer4_findings,
             )
             if mcp_result.get("servers"):
+                console.print(f"[dim]{_MCP_POLICY_HINT}[/dim]")
                 if mcp_result.get("has_local_scripts"):
                     console.print(
                         "[bold red]⚠ Local MCP script detected — "

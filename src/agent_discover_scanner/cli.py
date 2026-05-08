@@ -593,6 +593,11 @@ def scan_all(
         "--layer",
         help="Run a single facet only: code, network, k8s, endpoint, or mcp (not with --daemon)",
     ),
+    dry_run: bool = typer.Option(
+        False,
+        "--dry-run",
+        help="Validate configuration and report which layers are available without running a scan",
+    ),
 ):
     """
     Run a full 4-layer AI agent scan, correlate all findings,
@@ -627,6 +632,7 @@ def scan_all(
         verbose=verbose,
         scan_output_format=format,
         layer=layer,
+        dry_run=dry_run,
     )
 
 

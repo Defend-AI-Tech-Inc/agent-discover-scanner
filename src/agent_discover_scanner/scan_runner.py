@@ -70,6 +70,68 @@ def _invoke_layer1_scan(scan_root: str, layer1_sarif: str) -> None:
     cli_mod.scan(path=scan_root, output=layer1_sarif, format="sarif", verbose=False)
 
 
+def _check_dependency(cmd: str) -> bool:
+    return shutil.which(cmd) is not None
+
+
+def _run_dry_run(path: str, skip_layers: Optional[str], duration: int, daemon: bool) -> None:
+    """Validate configuration and report layer availability without running any scan."""
+    console.print("\n[bold cyan]Dry run — validating configuration[/bold cyan]\n")
+
+    # Validate path
+    try:
+        scan_root = validate_directory_exists(path, "Scan directory")
+        console.print(f"[green]✓[/green] Scan path: {scan_root.resolve()}")
+    except ValidationError:
+        raise typer.Exit(code=1)
+
+    if daemon:
+        console.print("[yellow]  Mode: daemon (continuous, every 30s)[/yellow]")
+    else:
+        console.print(f"  Mode: one-shot  (--duration {duration}s)")
+
+    # Build skip set
+    skip_set: set[str] = set()
+    if skip_layers:
+        for part in skip_layers.split(","):
+            key = part.strip().lstrip("layer").strip()
+            if key:
+                skip_set.add(key)
+
+    # Dependency checks
+    psutil_ok = False
+    try:
+        import psutil  # noqa: F401
+        psutil_ok = True
+    except ImportError:
+        pass
+
+    rows = [
+        ("1", "Source code (Python/JS AST)", True, "built-in"),
+        ("2", "Network monitoring", psutil_ok, "psutil"),
+        ("3", "Kubernetes runtime", _check_dependency("kubectl"), "kubectl"),
+        ("4", "Endpoint discovery", _check_dependency("osqueryi"), "osquery"),
+    ]
+
+    console.print("\n[bold]Layer availability:[/bold]")
+    all_ok = True
+    for num, name, available, dep in rows:
+        if num in skip_set:
+            console.print(f"  Layer {num} — {name}: [dim]SKIPPED[/dim]")
+        elif available:
+            console.print(f"  Layer {num} — {name}: [green]READY[/green]")
+        else:
+            console.print(f"  Layer {num} — {name}: [yellow]UNAVAILABLE[/yellow] ({dep} not found — layer will be skipped)")
+            all_ok = False
+
+    if all_ok:
+        console.print("\n[green]✓ Configuration valid — all active layers are ready[/green]")
+    else:
+        console.print("\n[yellow]Configuration valid — some layers will be skipped (see above)[/yellow]")
+
+    raise typer.Exit(code=0)
+
+
 def execute_scan_all(
     *,
     path: str,
@@ -88,8 +150,12 @@ def execute_scan_all(
     verbose: bool,
     scan_output_format: str,
     layer: Optional[str] = None,
+    dry_run: bool = False,
 ) -> Optional[dict]:
     """Run full or partial scan-all. Returns report dict, or None if MCP-only early exit."""
+    if dry_run:
+        _run_dry_run(path, skip_layers, duration, daemon)
+
     console.print("\n[bold cyan]🔍 Scanning for autonomous AI agents...[/bold cyan]\n")
 
     # Validate target path

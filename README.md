@@ -128,6 +128,9 @@ To verify all layers are working before your first real scan:
 agent-discover-scanner --version
 osquery --version
 which agent-discover-scanner   # macOS: should show ~/.local/bin/agent-discover-scanner
+
+# Or use --dry-run to get a complete layer readiness report:
+agent-discover-scanner scan-all ~/projects --dry-run
 ```
 
 To upload results to the DefendAI platform:
@@ -136,6 +139,124 @@ To upload results to the DefendAI platform:
 agent-discover-scanner scan-all ~/projects \
   --platform \
   --api-key YOUR_API_KEY
+```
+
+---
+
+## What you'll see on your first scan
+
+Running `scan-all` on a real developer machine (macOS, ~30s observation window):
+
+```
+$ agent-discover-scanner scan-all ~/projects --duration 30
+
+🔍 Scanning for autonomous AI agents...
+
+📂 Analyzing source code at /Users/alice/projects
+🌐 Monitoring live network connections...
+   Observing runtime behavior (30s)...
+💻 Scanning endpoints...
+
+[DETECT] Anthropic connection from Cursor Helper (PID: 61436) → api.anthropic.com:443
+[DETECT] OpenAI connection from Microsoft Edge Helper (PID: 4172) → api.openai.com:443
+
+🔗 Correlating findings...
+✓ Correlation complete
+
+⚠ Unverified MCP server: filesystem (Community/Unknown) — not from a verified publisher
+
+🤖 Autonomous Agent Inventory
+
+┏━━━━━━━━━━━━━━━━┳━━━━━━━┳━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓
+┃ Classification ┃ Count ┃ Description                                                    ┃
+┡━━━━━━━━━━━━━━━━╇━━━━━━━╇━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┩
+│ CONFIRMED      │ 1     │ Active — detected in code and observed at runtime              │
+│ UNKNOWN        │ 2     │ Code found — not yet observed at runtime                       │
+│ SHADOW AI      │ 4     │ Known app using AI — review for governance                     │
+│ ZOMBIE         │ 0     │ Inactive — code exists but no recent runtime activity          │
+│ GHOST          │ 0     │ ⚠ Critical — runtime activity with no source code (ungoverned) │
+└────────────────┴───────┴────────────────────────────────────────────────────────────────┘
+
+Risk Breakdown:
+  ● Critical: 0
+  ● High: 1
+  ● Medium: 2
+  ● Low: 4
+
+✅ Scan complete — results saved to defendai-results
+```
+
+All output files land in `./defendai-results/`:
+
+| File | Contents |
+|---|---|
+| `layer1_code.sarif` | Code findings in SARIF format (GitHub Security tab ready) |
+| `layer2_network.json` | Live network connections observed during scan |
+| `layer3_k8s.jsonl` | Kubernetes workload events (if cluster available) |
+| `layer4_endpoint.json` | Installed packages, desktop apps, browser AI usage |
+| `agent_inventory.json` | Final correlated agent inventory |
+
+For an executive-ready audit bundle (AIBOM + markdown reports):
+
+```bash
+agent-discover-scanner audit ~/projects --output ./audit-report
+# Writes: audit-report/aibom.json, ghost-agents.md, mcp-report.md, summary.md
+```
+
+---
+
+## Common issues
+
+**`agent-discover-scanner: command not found` after pipx install**
+
+```bash
+pipx ensurepath
+source ~/.zshrc   # or ~/.bashrc on Linux
+```
+
+If still missing: `which agent-discover-scanner` should show `~/.local/bin/agent-discover-scanner`. If `~/.local/bin` is not in `$PATH`, add it manually.
+
+**Layer 2 network monitoring fails on Linux**
+
+Layer 2 requires elevated privileges on Linux. Either run with `sudo` (avoid on macOS) or skip the layer:
+
+```bash
+sudo agent-discover-scanner scan-all ~/projects --duration 30
+# or skip Layer 2:
+agent-discover-scanner scan-all ~/projects --skip-layers 2
+```
+
+**osquery not installed — Layer 4 skipped**
+
+Layer 4 is optional. If osquery is not installed, the scan continues with Layers 1–3. To install:
+
+```bash
+# macOS
+brew install osquery
+# Linux
+sudo apt-get install osquery   # or see https://osquery.io/downloads
+```
+
+**Large repo warning — scan is slow**
+
+If you see `⚠ Large scan path detected: N Python files`, point the scanner at a specific project directory rather than your entire home folder:
+
+```bash
+agent-discover-scanner scan-all ~/projects/my-agent-project --duration 30
+```
+
+**Layer 3 Kubernetes not available**
+
+If no cluster is reachable, Layer 3 logs a warning and continues. GHOST detection still works via Layer 2 network correlation. To skip Layer 3 explicitly:
+
+```bash
+agent-discover-scanner scan-all ~/projects --skip-layers 3
+```
+
+**Check what layers are ready before scanning**
+
+```bash
+agent-discover-scanner scan-all ~/projects --dry-run
 ```
 
 ---

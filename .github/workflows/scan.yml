@@ -1,37 +1,38 @@
-name: AI Discovery Scan
+name: AI Agent Discovery
 
 on:
   schedule:
-    - cron: '0 2 * * *'  # Daily at 2 AM
+    - cron: '0 2 * * 1'  # Weekly on Monday at 2 AM
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
   workflow_dispatch:
 
+permissions:
+  security-events: write
+  contents: read
+
 jobs:
-  scan:
+  agent-scan:
+    name: Scan for AI agents
     runs-on: ubuntu-latest
-    
+
     steps:
       - name: Checkout
-        uses: actions/checkout@v3
-      
-      - name: Install AgentDiscover Scanner
-        run: |
-          curl -fsSL https://raw.githubusercontent.com/Defend-AI-Tech-Inc/agent-discover-scanner/main/install.sh | bash -s -- --non-interactive --layers 1,4
-      
-      - name: Run Scan
-        run: |
-          agent-discover-scanner scan --layers 1,4 --output scan_report.md
-      
-      - name: Upload Report
-        uses: actions/upload-artifact@v3
-        with:
-          name: scan-report
-          path: scan_report.md
-      
+        uses: actions/checkout@v4
 
-      - name: Check for High-Risk Findings
-        run: |
-          if grep -q "Risk Score: [789][0-9]/100" scan_report.md; then
-            echo "::warning::High-risk AI usage detected (Risk Score 70+)"
-            echo "Review scan_report.md for details"
-          fi
-          # Don't fail the build - just warn
+      - name: Scan and upload to GitHub Security
+        uses: Defend-AI-Tech-Inc/agent-discover-scanner@v2.5.0
+        with:
+          path: '.'
+          output: 'agent-scan-results.sarif'
+          upload-sarif: 'true'
+
+      - name: Upload SARIF artifact
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: agent-scan-sarif
+          path: agent-scan-results.sarif
+          retention-days: 30

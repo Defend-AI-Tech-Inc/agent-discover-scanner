@@ -20,7 +20,7 @@ Current capabilities:
 
 ## v2.5 — Hardening (current sprint)
 
-- [ ] GitHub Action for CI/CD AIBOM generation
+- [x] GitHub Action for CI/CD AIBOM generation
 - [ ] Improved MCP publisher verification (signed manifests)
 - [ ] Agent framework support: PydanticAI, Smolagents, Agno
 - [ ] Local model endpoint detection (Ollama, llama.cpp, vLLM) in Layer 1

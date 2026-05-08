@@ -15,7 +15,13 @@ authors = [
 maintainers = [
     {name = "DefendAI", email = "support@defendai.ai"}
 ]
-keywords = ["ai", "agents", "security", "static-analysis", "kubernetes", "llm", "shadow-ai", "ai-security", "agent-discovery", "ebpf"]
+keywords = [
+    "ai", "agents", "security", "static-analysis", "kubernetes", "llm",
+    "shadow-ai", "ai-security", "agent-discovery", "ebpf",
+    "ai-agent-security", "mcp-security", "llm-security", "ghost-detection",
+    "ai-governance", "cyclonedx", "aibom", "mcp", "agent-scanner",
+    "shadow-ai-detection", "ai-inventory",
+]
 classifiers = [
     "Development Status :: 4 - Beta",
     "Intended Audience :: Developers",

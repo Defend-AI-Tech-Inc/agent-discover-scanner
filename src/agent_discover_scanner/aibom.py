@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import json
+import uuid
+from importlib.metadata import version as _pkg_version
 from pathlib import Path
 from typing import Any
 
@@ -52,12 +54,31 @@ def generate_aibom(inventory_json: Path, output_path: Path) -> dict[str, Any]:
                 )
             components.append(comp)
 
+    try:
+        scanner_version = _pkg_version("agent-discover-scanner")
+    except Exception:
+        scanner_version = "unknown"
+
     bom: dict[str, Any] = {
         "bomFormat": "CycloneDX",
         "specVersion": "1.6",
+        "serialNumber": f"urn:uuid:{uuid.uuid4()}",
         "version": 1,
         "metadata": {
             "timestamp": raw.get("generated_at"),
+            "tools": [
+                {
+                    "vendor": "DefendAI",
+                    "name": "AgentDiscover Scanner",
+                    "version": scanner_version,
+                    "externalReferences": [
+                        {
+                            "type": "website",
+                            "url": "https://defendai.ai",
+                        }
+                    ],
+                }
+            ],
             "properties": [
                 {
                     "name": "agent-discover:aibom_note",

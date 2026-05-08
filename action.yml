@@ -1,0 +1,54 @@
+name: 'AgentDiscover Scanner'
+description: 'Scan your repository for AI agents and Shadow AI. Outputs SARIF for GitHub Security.'
+branding:
+  icon: 'shield'
+  color: 'red'
+
+inputs:
+  path:
+    description: 'Directory to scan'
+    required: false
+    default: '.'
+  output:
+    description: 'SARIF output file path'
+    required: false
+    default: 'agent-scan-results.sarif'
+  upload-sarif:
+    description: 'Upload SARIF to GitHub Security tab (requires security-events: write permission)'
+    required: false
+    default: 'true'
+  python-version:
+    description: 'Python version to use'
+    required: false
+    default: '3.12'
+
+outputs:
+  sarif-file:
+    description: 'Path to the SARIF output file'
+    value: ${{ inputs.output }}
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: ${{ inputs.python-version }}
+
+    - name: Install AgentDiscover Scanner
+      shell: bash
+      run: pip install agent-discover-scanner
+
+    - name: Scan source code for AI agents (Layer 1)
+      shell: bash
+      run: |
+        agent-discover-scanner scan "${{ inputs.path }}" \
+          --format sarif \
+          --output "${{ inputs.output }}"
+
+    - name: Upload SARIF to GitHub Security
+      if: inputs.upload-sarif == 'true'
+      uses: github/codeql-action/upload-sarif@v3
+      with:
+        sarif_file: ${{ inputs.output }}
+        category: 'agent-discover'

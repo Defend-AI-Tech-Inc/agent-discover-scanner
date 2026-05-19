@@ -908,6 +908,8 @@ def execute_scan_all(
             mcp_result = {}
 
         report = run_correlation_once()
+        report["mcp"] = mcp_result
+        report["scan_path"] = str(scan_root)
         if platform:
             try:
                 network_for_upload = network_findings or []

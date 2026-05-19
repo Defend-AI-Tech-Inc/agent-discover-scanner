@@ -613,6 +613,16 @@ def scan_all(
         "--summary",
         help="Print a concise executive summary after the scan (agent counts, highest risk, top SaaS connections, single recommendation)",
     ),
+    emit_mcpfw_policy: Optional[str] = typer.Option(
+        None,
+        "--emit-mcpfw-policy",
+        help="After scan, export MCP governance policy YAML to this path (e.g. policy.yaml). Use --stance to set enforcement level.",
+    ),
+    stance: str = typer.Option(
+        "balanced",
+        "--stance",
+        help="Policy stance for --emit-mcpfw-policy: strict, balanced (default), or monitor",
+    ),
 ):
     """
     Run a full 4-layer AI agent scan, correlate all findings,
@@ -630,7 +640,7 @@ def scan_all(
 
     path = os.path.expanduser(path)
 
-    execute_scan_all(
+    report = execute_scan_all(
         path=path,
         output=output,
         duration=duration,
@@ -652,6 +662,106 @@ def scan_all(
         src_repo_ttl=src_repo_ttl,
         summary=summary,
     )
+
+    if emit_mcpfw_policy and report and not daemon:
+        _write_mcpfw_policy(report, emit_mcpfw_policy, stance)
+
+
+def _write_mcpfw_policy(report: dict, output_path: str, stance: str) -> None:
+    """Write mcpfw policy YAML from scan report to output_path."""
+    try:
+        import yaml
+        from agent_discover_scanner.exporters.mcpfw_policy import (
+            _strip_internal_keys,
+            export_mcpfw_policy,
+        )
+
+        policy = export_mcpfw_policy(report, stance=stance)
+        _strip_internal_keys(policy)
+        out = Path(output_path)
+        out.parent.mkdir(parents=True, exist_ok=True)
+        out.write_text(yaml.dump(policy, default_flow_style=False, sort_keys=False), encoding="utf-8")
+        console.print(f"[green]✓ mcpfw policy ({stance}) written to {out.resolve()}[/green]")
+        n_servers = len(policy.get("servers") or [])
+        console.print(f"[dim]  {n_servers} server rule(s) · run: mcpfw wrap --policy {out} -- <mcp-server-cmd>[/dim]")
+    except Exception as exc:
+        console.print(f"[red]Failed to write mcpfw policy: {exc}[/red]")
+
+
+@app.command("export-mcpfw-policy")
+def export_mcpfw_policy_cmd(
+    scan_dir: str = typer.Argument(..., help="Directory to scan for MCP configurations"),
+    stance: str = typer.Option(
+        "balanced",
+        "--stance",
+        "-s",
+        help="Policy stance: strict (deny-by-default), balanced (default), or monitor (log only)",
+    ),
+    output: str = typer.Option(
+        "mcpfw-policy.yaml",
+        "--output",
+        "-o",
+        help="Output YAML file path",
+    ),
+):
+    """
+    Export an mcpfw policy YAML from MCP configurations detected in a directory.
+
+    Three stances:
+      strict    - deny-by-default, minimal tool allowlists, full DLP blocking
+      balanced  - allow with DLP and allowlists for unverified servers (default)
+      monitor   - log only, no blocking — use for observability before enforcement
+
+    Example:
+      agent-discover export-mcpfw-policy . --stance strict --output policy.yaml
+      mcpfw wrap --policy policy.yaml -- npx @modelcontextprotocol/server-filesystem /tmp
+    """
+    import yaml
+    from agent_discover_scanner.exporters.mcpfw_policy import (
+        _strip_internal_keys,
+        export_mcpfw_policy,
+    )
+    from agent_discover_scanner.mcp_detector import detect_mcp_servers
+
+    try:
+        scan_root = validate_directory_exists(scan_dir, "Scan directory")
+    except ValidationError:
+        raise typer.Exit(code=1)
+
+    console.print(f"[bold green]Scanning MCP configurations in {scan_root}[/bold green]")
+
+    try:
+        mcp_result = detect_mcp_servers(scan_dir=str(scan_root))
+    except Exception as exc:
+        console.print(f"[red]MCP detection failed: {exc}[/red]")
+        raise typer.Exit(code=1)
+
+    n_servers = len(mcp_result.get("servers") or [])
+    if n_servers == 0:
+        console.print("[yellow]No MCP servers detected — writing minimal stub policy[/yellow]")
+    else:
+        console.print(f"[cyan]Found {n_servers} MCP server(s)[/cyan]")
+        for s in (mcp_result.get("servers") or [])[:5]:
+            risk_color = {"critical": "red", "high": "yellow"}.get(s.get("risk", ""), "dim")
+            verified = "" if s.get("publisher_verified") else " [unverified]"
+            console.print(
+                f"  [{risk_color}]●[/{risk_color}] {s.get('server_name')} "
+                f"({s.get('vendor', '?')}){verified} — risk: {s.get('risk', '?')}"
+            )
+
+    scan_result = {"mcp": mcp_result, "scan_path": str(scan_root)}
+    policy = export_mcpfw_policy(scan_result, stance=stance)
+    _strip_internal_keys(policy)
+
+    out = Path(output)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_text(yaml.dump(policy, default_flow_style=False, sort_keys=False), encoding="utf-8")
+
+    console.print(f"\n[green]✓ mcpfw policy ({stance}) written to {out.resolve()}[/green]")
+    n_rules = len(policy.get("servers") or [])
+    n_dlp = len(policy.get("response_rules") or [])
+    console.print(f"[dim]  {n_rules} server rule(s), {n_dlp} global DLP rule(s)[/dim]")
+    console.print(f"[dim]  To enforce: mcpfw wrap --policy {out} -- <mcp-server-command>[/dim]")
 
 
 @app.command()

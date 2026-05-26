@@ -457,6 +457,36 @@ def execute_scan_all(
             pass
     known_apps = build_known_apps(platform_apps=platform_apps)
 
+    # Detect enterprise SSE proxies (Zscaler, Netskope, Prisma, Umbrella).
+    # When active, psutil.net_connections() sees the proxy IP instead of
+    # bedrock-runtime.*.amazonaws.com. Warn and surface fallback strategies.
+    try:
+        from agent_discover_scanner.interceptors import detect_network_interceptors
+
+        interceptors = detect_network_interceptors()
+        if interceptors:
+            vendor_names = ", ".join(r.vendor for r in interceptors)
+            console.print(
+                f"\n[yellow]⚠  Enterprise network proxy detected: {vendor_names}[/yellow]\n"
+                f"   Layer 2 (psutil) will not see Bedrock endpoints directly.\n"
+                f"   Activating fallback detection path "
+                f"({interceptors[0].fallback_strategy}) for AWS Bedrock discovery.\n"
+            )
+            # Run process env scan as the always-available fallback: find processes
+            # that hold AWS credentials, which may indicate hidden Bedrock activity.
+            from agent_discover_scanner.interceptors.base import NetworkInterceptor
+
+            env_hits = NetworkInterceptor.run_process_env_scan()
+            if env_hits:
+                console.print(
+                    f"   [dim]Process env scan: {len(env_hits)} process(es) with AWS "
+                    f"credentials — region(s): "
+                    + ", ".join({h.get("region") or "?" for h in env_hits if h.get("region")})
+                    + "[/dim]\n"
+                )
+    except Exception:
+        interceptors = []
+
     # Shared state for findings
     code_findings: list = []
     network_findings: list = []

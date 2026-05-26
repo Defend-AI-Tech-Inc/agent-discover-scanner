@@ -18,6 +18,9 @@ from agent_discover_scanner.known_apps import build_known_apps, is_known_desktop
 
 # Known LLM API hostnames for inferring provider from remote_address (Layer 4)
 LLM_HOSTNAME_TO_PROVIDER: List[Tuple[str, str]] = [
+    # AWS Bedrock — region-scoped dynamic hostnames matched via substring
+    ("bedrock-runtime.", "bedrock"),
+    ("bedrock-agent-runtime.", "bedrock"),
     # Direct API endpoints
     ("api.openai.com", "openai"),
     ("api.anthropic.com", "anthropic"),
@@ -456,6 +459,7 @@ class CorrelationEngine:
             "DAI004": "Shadow AI",
             "DAI005": "Direct HTTP LLM Client",
             "DAI006": "LLM API Endpoint",
+            "DAI007": "AWS Bedrock",
         }
         return mapping.get(rule_id, "Unknown")
 
@@ -472,6 +476,7 @@ class CorrelationEngine:
             "cohere",
             "mistral",
             "together",
+            "bedrock",
         }
     )
 
@@ -891,6 +896,112 @@ class CorrelationEngine:
                 json.dump(report, f, indent=2)
 
         return report
+
+    @classmethod
+    def correlate_bedrock_findings(
+        cls,
+        layer1_findings: List[Dict],
+        layer2_findings: List[Dict],
+    ) -> List[AgentInventoryItem]:
+        """
+        Bedrock-specific correlation with explicit ZOMBIE classification for code-only findings.
+
+        Rules:
+          Layer1 + Layer2 → CONFIRMED  (SDK present and observed calling Bedrock runtime)
+          Layer2 only     → GHOST      (live Bedrock traffic with no matching source code)
+          Layer1 only     → ZOMBIE     (SDK / model-id found in code, agent not seen running)
+          Neither         → (not produced; nothing to correlate)
+
+        Framework metadata distinguishes LangGraph, LangChain, and raw AWS SDK.
+        """
+        bedrock_rule_ids = frozenset({"DAI007", "DAI003"})
+
+        # Layer1: Bedrock or LangGraph/LangChain findings
+        bedrock_l1 = [
+            f for f in layer1_findings
+            if f.get("rule_id") in bedrock_rule_ids
+            or "bedrock" in (f.get("message") or "").lower()
+        ]
+
+        # Layer2: findings where provider resolved to "bedrock" or hostname contains "bedrock"
+        bedrock_l2 = [
+            f for f in layer2_findings
+            if (f.get("provider") or "").lower() == "bedrock"
+            or "bedrock" in (f.get("remote_host") or "").lower()
+            or "bedrock" in (f.get("remote_address") or "").lower()
+        ]
+
+        items: List[AgentInventoryItem] = []
+        matched_l2: set = set()
+
+        for cf in bedrock_l1:
+            agent_id = f"{cf['file_path']}:{cf['line']}"
+            framework = cls._detect_bedrock_framework(cf)
+
+            # Greedy: assign first unmatched Layer2 finding to this code finding
+            l2_hit: Optional[Dict] = None
+            for idx, nf in enumerate(bedrock_l2):
+                if idx not in matched_l2:
+                    l2_hit = nf
+                    matched_l2.add(idx)
+                    break
+
+            if l2_hit:
+                classification = "confirmed"
+                detection_layers = ["layer1", "layer2"]
+            else:
+                # SDK present but agent was not observed running during the scan window
+                classification = "zombie"
+                detection_layers = ["layer1"]
+
+            items.append(AgentInventoryItem(
+                agent_id=agent_id,
+                classification=classification,
+                risk_level="high",
+                code_file=cf["file_path"],
+                framework=framework,
+                rule_id=cf.get("rule_id"),
+                network_provider="bedrock" if l2_hit else None,
+                last_seen=l2_hit.get("timestamp") if l2_hit else None,
+                process_name=l2_hit.get("process_name") if l2_hit else None,
+                detection_layers=detection_layers,
+            ))
+
+        # Layer2-only Bedrock activity → GHOST (serverless Lambda / managed Bedrock Agent)
+        for idx, nf in enumerate(bedrock_l2):
+            if idx in matched_l2:
+                continue
+            process_name = nf.get("process_name") or ""
+            items.append(AgentInventoryItem(
+                agent_id=f"ghost:bedrock:{process_name}",
+                classification="ghost",
+                risk_level="critical",
+                network_provider="bedrock",
+                last_seen=nf.get("timestamp"),
+                process_name=process_name,
+                detection_layers=["layer2"],
+            ))
+
+        return items
+
+    @classmethod
+    def _detect_bedrock_framework(cls, finding: Dict) -> str:
+        """Infer framework used with Bedrock from a Layer 1 finding."""
+        message = (finding.get("message") or "").lower()
+        rule_id = finding.get("rule_id") or ""
+
+        if rule_id == "DAI003":
+            if any(kw in message for kw in ("stategraph", "langgraph", "toolnode", "add_node", "add_edge")):
+                return "LangGraph"
+            return "LangChain"
+
+        if rule_id == "DAI007":
+            if any(kw in message for kw in ("chatbedrock", "bedrockllm", "bedrockembeddings")):
+                return "LangChain"
+            if "boto3" in message or "invoke_model" in message:
+                return "AWS SDK"
+
+        return "AWS Bedrock"
 
     @classmethod
     def analyze_behaviors(cls, network_findings: List[Dict]) -> Dict:

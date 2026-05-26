@@ -193,15 +193,22 @@ class CrewAISignature(Signature):
 
 class LangChainSignature(Signature):
     """
-    Detect LangChain agent patterns.
+    Detect LangChain and LangGraph agent patterns.
 
     Targets:
     - langchain.agents.initialize_agent (legacy)
     - langchain.agents.create_agent
     - langgraph.graph.StateGraph (complex workflows)
+    - langgraph.prebuilt.ToolNode
+    - add_node / add_edge method calls when langgraph is imported
     """
 
     RULE_ID = "DAI003"
+
+    # LangGraph-specific class names (checked against resolved func_name)
+    _LANGGRAPH_CLASSES = frozenset({"StateGraph", "ToolNode", "MessagesState"})
+    # Generic method names that are LangGraph workflow orchestration when langgraph is imported
+    _LANGGRAPH_METHODS = frozenset({"add_node", "add_edge"})
 
     def check(self, node: ast.Call, visitor: ContextAwareVisitor) -> Optional[Finding]:
         func_name = self._get_function_name(node, visitor)
@@ -209,7 +216,7 @@ class LangChainSignature(Signature):
         if not func_name:
             return None
 
-        # Check for agent initialization
+        # LangChain agent initialization
         if "initialize_agent" in func_name or "create_agent" in func_name:
             if "langchain" in func_name:
                 return Finding(
@@ -221,7 +228,7 @@ class LangChainSignature(Signature):
                     severity="warning",
                 )
 
-        # Check for StateGraph (complex workflows)
+        # StateGraph — strongest LangGraph signal
         if "StateGraph" in func_name and "langgraph" in func_name:
             return Finding(
                 file_path=visitor.filename,
@@ -231,6 +238,31 @@ class LangChainSignature(Signature):
                 message="LangGraph StateGraph detected (complex stateful workflow) - Consider enabling AgentWatch deep tracing",
                 severity="note",
             )
+
+        # ToolNode / MessagesState when imported from langgraph
+        for class_name in self._LANGGRAPH_CLASSES - {"StateGraph"}:
+            if class_name in func_name and "langgraph" in func_name:
+                return Finding(
+                    file_path=visitor.filename,
+                    lineno=node.lineno,
+                    col_offset=node.col_offset,
+                    rule_id=self.RULE_ID,
+                    message=f"LangGraph {class_name} detected — graph is stateful and should be traced",
+                    severity="note",
+                )
+
+        # add_node / add_edge — workflow construction methods; only flag when langgraph is imported
+        for method in self._LANGGRAPH_METHODS:
+            if func_name.endswith(f".{method}"):
+                if any("langgraph" in imp for imp in visitor.imports):
+                    return Finding(
+                        file_path=visitor.filename,
+                        lineno=node.lineno,
+                        col_offset=node.col_offset,
+                        rule_id=self.RULE_ID,
+                        message=f"LangGraph workflow method detected ({method}) — graph is stateful and should be traced",
+                        severity="note",
+                    )
 
         return None
 
@@ -432,6 +464,147 @@ class LlmApiStringSignature(Signature):
         )
 
 
+class BedrockSignature(Signature):
+    """
+    Detect AWS Bedrock runtime usage — Layer 1 static code analysis.
+
+    Targets:
+    - ChatBedrock, BedrockLLM, BedrockEmbeddings (langchain_aws / langchain_community)
+    - boto3.client("bedrock-runtime") / boto3.client("bedrock-agent-runtime")
+    - AnthropicBedrock (anthropic SDK Bedrock adapter)
+    - invoke_model() when Bedrock-related imports are present
+    - Model ID strings: mistral.mistral-large, anthropic.claude-, amazon.titan-, meta.llama, cohere.command
+    """
+
+    RULE_ID = "DAI007"
+
+    _BEDROCK_CLASS_NAMES = frozenset({
+        "ChatBedrock",
+        "BedrockLLM",
+        "BedrockChat",
+        "BedrockEmbeddings",
+        "AnthropicBedrock",
+    })
+
+    # Module paths that indicate Bedrock is in use
+    _BEDROCK_IMPORT_MARKERS = (
+        "langchain_aws",
+        "langchain_community.llms.bedrock",
+        "langchain_community.chat_models.bedrock",
+        "boto3",
+        "anthropic",
+    )
+
+    # Bedrock-specific model ID prefixes / service name substrings in string literals
+    _BEDROCK_STRING_MARKERS = (
+        "bedrock-runtime",
+        "bedrock-agent-runtime",
+        "mistral.mistral-large",
+        "anthropic.claude-",
+        "amazon.titan-",
+        "meta.llama",
+        "cohere.command",
+    )
+
+    def check(self, node: ast.Call, visitor: ContextAwareVisitor) -> Optional[Finding]:
+        func_name = self._get_function_name(node, visitor)
+        if not func_name:
+            return None
+
+        # ChatBedrock / BedrockLLM / etc.
+        for class_name in self._BEDROCK_CLASS_NAMES:
+            if class_name in func_name:
+                return Finding(
+                    file_path=visitor.filename,
+                    lineno=node.lineno,
+                    col_offset=node.col_offset,
+                    rule_id=self.RULE_ID,
+                    message=f"AWS Bedrock LLM client detected ({class_name})",
+                    severity="warning",
+                )
+
+        # boto3.client("bedrock-runtime") or boto3.client("bedrock-agent-runtime")
+        if func_name.endswith(".client") and "boto3" in func_name:
+            if self._has_bedrock_service_arg(node):
+                return Finding(
+                    file_path=visitor.filename,
+                    lineno=node.lineno,
+                    col_offset=node.col_offset,
+                    rule_id=self.RULE_ID,
+                    message="AWS Bedrock boto3 client instantiation detected",
+                    severity="warning",
+                )
+
+        # invoke_model() — only when Bedrock imports are present (avoids false positives)
+        if func_name.endswith(".invoke_model") or func_name == "invoke_model":
+            all_imports = " ".join(visitor.imports)
+            if any(marker in all_imports for marker in self._BEDROCK_IMPORT_MARKERS):
+                return Finding(
+                    file_path=visitor.filename,
+                    lineno=node.lineno,
+                    col_offset=node.col_offset,
+                    rule_id=self.RULE_ID,
+                    message="AWS Bedrock invoke_model call detected",
+                    severity="warning",
+                )
+
+        return None
+
+    def check_constant(self, node: ast.Constant, visitor: ContextAwareVisitor) -> Optional[Finding]:  # type: ignore[override]
+        value = getattr(node, "value", None)
+        if not isinstance(value, str):
+            return None
+
+        val_lower = value.lower()
+        for marker in self._BEDROCK_STRING_MARKERS:
+            if marker in val_lower:
+                return Finding(
+                    file_path=visitor.filename,
+                    lineno=node.lineno,
+                    col_offset=node.col_offset,
+                    rule_id=self.RULE_ID,
+                    message=f"AWS Bedrock model/endpoint string detected: {marker!r}",
+                    severity="note",
+                )
+
+        return None
+
+    def _get_function_name(self, node: ast.Call, visitor: ContextAwareVisitor) -> Optional[str]:
+        if isinstance(node.func, ast.Name):
+            return visitor.resolve_name(node.func.id)
+        elif isinstance(node.func, ast.Attribute):
+            if isinstance(node.func.value, ast.Name):
+                base = visitor.resolve_name(node.func.value.id)
+                return f"{base}.{node.func.attr}"
+            elif isinstance(node.func.value, ast.Attribute):
+                parts = self._extract_attribute_chain(node.func)
+                if parts:
+                    resolved_root = visitor.resolve_name(parts[0])
+                    return ".".join([resolved_root] + parts[1:])
+        return None
+
+    def _extract_attribute_chain(self, attr_node: ast.Attribute) -> list[str]:
+        parts = [attr_node.attr]
+        current = attr_node.value
+        while isinstance(current, ast.Attribute):
+            parts.insert(0, current.attr)
+            current = current.value
+        if isinstance(current, ast.Name):
+            parts.insert(0, current.id)
+        return parts
+
+    def _has_bedrock_service_arg(self, node: ast.Call) -> bool:
+        """Return True if boto3.client() is called with a bedrock-* service name."""
+        if node.args and isinstance(node.args[0], ast.Constant):
+            if "bedrock" in str(node.args[0].value).lower():
+                return True
+        for kw in node.keywords:
+            if kw.arg == "service_name" and isinstance(kw.value, ast.Constant):
+                if "bedrock" in str(kw.value.value).lower():
+                    return True
+        return False
+
+
 # Global signature registry
 SIGNATURE_REGISTRY: list[Signature] = [
     AutoGenSignature(),
@@ -440,4 +613,5 @@ SIGNATURE_REGISTRY: list[Signature] = [
     ShadowAISignature(),
     DirectHttpLlmClientSignature(),
     LlmApiStringSignature(),
+    BedrockSignature(),
 ]

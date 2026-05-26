@@ -53,6 +53,10 @@ class NetworkMonitor:
         'bard.google.com': 'Bard',
         'gemini.google.com': 'Gemini',
         
+        # AWS Bedrock — region-scoped dynamic hostnames; matched by substring
+        'bedrock-runtime': 'AWS Bedrock',
+        'bedrock-agent-runtime': 'AWS Bedrock Agent',
+
         # Other AI services
         'cohere.ai': 'Cohere',
         'api.cohere.ai': 'Cohere API',

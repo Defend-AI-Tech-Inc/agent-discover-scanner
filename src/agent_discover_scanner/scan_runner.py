@@ -301,6 +301,8 @@ def execute_scan_all(
     src_repo: Optional[str] = None,
     src_repo_ttl: int = 3600,
     summary: bool = False,
+    cloudtrail_hours: int = 0,
+    cloudtrail_lake_arn: Optional[str] = None,
 ) -> Optional[dict]:
     """Run full or partial scan-all. Returns report dict, or None if MCP-only early exit."""
     if dry_run:
@@ -576,6 +578,40 @@ def execute_scan_all(
                         "process_name": mf["process_name"],
                         "timestamp": mf["timestamp"],
                     })
+
+            # CloudTrail Bedrock detection — supplements psutil when Bedrock
+            # endpoints are invisible to passive network monitoring.
+            if cloudtrail_hours > 0 or cloudtrail_lake_arn:
+                try:
+                    from agent_discover_scanner.detectors.cloudtrail import (
+                        run_cloudtrail_detection,
+                    )
+
+                    ct_source = "CloudTrail Lake" if cloudtrail_lake_arn else "CloudTrail"
+                    console.print(
+                        f"[dim]  Querying {ct_source} for Bedrock events "
+                        f"(last {cloudtrail_hours}h)...[/dim]"
+                    )
+                    ct_findings = run_cloudtrail_detection(
+                        lookback_hours=cloudtrail_hours or 1,
+                        lake_arn=cloudtrail_lake_arn,
+                    )
+                    if ct_findings:
+                        console.print(
+                            f"  [cyan]✓[/cyan] CloudTrail: "
+                            f"{len(ct_findings)} Bedrock event(s) detected"
+                        )
+                        # Merge into nf; deduplicate by provider+timestamp
+                        existing_keys = {
+                            (f.get("provider"), f.get("timestamp")) for f in nf
+                        }
+                        for ctf in ct_findings:
+                            key = (ctf.get("provider"), ctf.get("timestamp"))
+                            if key not in existing_keys:
+                                nf.append(ctf)
+                                existing_keys.add(key)
+                except Exception as ct_exc:
+                    logger.warning("CloudTrail detection error: %s", ct_exc)
 
             summary_with_findings = {**summary, "findings": nf}
             _rotate_file_if_needed(layer2_json, max_log_size_bytes, max_log_backups)

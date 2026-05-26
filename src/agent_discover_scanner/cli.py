@@ -623,6 +623,22 @@ def scan_all(
         "--stance",
         help="Policy stance for --emit-mcpfw-policy: strict, balanced (default), or monitor",
     ),
+    cloudtrail_hours: int = typer.Option(
+        0,
+        "--cloudtrail-hours",
+        help=(
+            "Query CloudTrail for Bedrock invocation events covering this many hours back "
+            "(0 = disabled). Requires cloudtrail:LookupEvents permission."
+        ),
+    ),
+    cloudtrail_lake_arn: Optional[str] = typer.Option(
+        None,
+        "--cloudtrail-lake-arn",
+        help=(
+            "CloudTrail Lake event data store ARN for near-real-time Bedrock detection (~60s delay). "
+            "Requires cloudtrail:StartQuery and cloudtrail:GetQueryResults permissions."
+        ),
+    ),
 ):
     """
     Run a full 4-layer AI agent scan, correlate all findings,
@@ -661,6 +677,8 @@ def scan_all(
         src_repo=src_repo,
         src_repo_ttl=src_repo_ttl,
         summary=summary,
+        cloudtrail_hours=cloudtrail_hours,
+        cloudtrail_lake_arn=cloudtrail_lake_arn,
     )
 
     if emit_mcpfw_policy and report and not daemon:

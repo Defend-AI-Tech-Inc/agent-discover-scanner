@@ -285,6 +285,71 @@ Real scan output:
 [DETECT] OpenAI connection from OneDrive (PID: 96089) → api.openai.com:443
 ```
 
+### Layer 5 — Cloud Audit (v2.7.0+)
+
+**Why Layer 2 misses AWS Bedrock.** AWS Bedrock Runtime endpoints rotate across hundreds of generic EC2 IPs with no published CIDR ranges and no stable reverse-DNS pattern. Passive socket monitoring (psutil) can observe the TCP connection but cannot reliably identify it as Bedrock without a complete, continuously-updated IP allowlist — which does not exist publicly. On VPC endpoints, traffic stays inside the AWS network and never appears on the host's socket table at all.
+
+**Layer 5 — Cloud Audit is the enterprise-grade alternative.** It queries cloud provider audit logs directly, giving you every AI API call with the caller identity, source IP, model ID, and the HTTP User-Agent the SDK set at call time — honest framework attribution (`langchain-aws`, `boto3`, `amazon-bedrock-agent`) that static code analysis can miss.
+
+**Provider support matrix:**
+
+| Provider | Service | Status | CLI flag |
+|---|---|---|---|
+| AWS | Bedrock (CloudTrail) | **GA** | `--cloud-audit` |
+| Azure | Azure OpenAI (Monitor) | Preview stub | `--azure-monitor` |
+| GCP | Vertex AI (Cloud Audit Logs) | Preview stub | `--gcp-audit` |
+
+**Required IAM permission (AWS):**
+
+```json
+{
+  "Effect": "Allow",
+  "Action": ["cloudtrail:LookupEvents"],
+  "Resource": "*"
+}
+```
+
+For CloudTrail Lake (near-real-time, ~60s delay instead of 5-15 min):
+
+```json
+{
+  "Effect": "Allow",
+  "Action": [
+    "cloudtrail:StartQuery",
+    "cloudtrail:GetQueryResults"
+  ],
+  "Resource": "*"
+}
+```
+
+**CLI usage:**
+
+```bash
+# Enable Cloud Audit detection (1-hour lookback, us-east-1)
+agent-discover-scanner scan-all ~/projects --cloud-audit
+
+# Specify region and longer lookback window
+agent-discover-scanner scan-all ~/projects \
+  --cloud-audit \
+  --cloud-audit-region eu-west-1 \
+  --cloud-audit-hours 4
+
+# CloudTrail Lake — near-real-time (~60s delay)
+agent-discover-scanner scan-all ~/projects \
+  --cloud-audit \
+  --cloud-audit-lake-arn arn:aws:cloudtrail:us-east-1:123456789012:eventdatastore/YOUR-ARN \
+  --cloud-audit-region us-east-1
+
+# Works with audit mode too
+agent-discover-scanner audit ~/projects \
+  --cloud-audit \
+  --cloud-audit-region us-east-1
+```
+
+When Layer 5 findings are merged with Layer 2 network findings, the correlator can promote an agent from UNKNOWN to CONFIRMED even on VPC endpoints where psutil sees nothing. Layer 5 findings are written to `layer5_cloud_audit.json` in the output directory.
+
+> **Credential configuration.** The scanner uses standard boto3 credential resolution: `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` environment variables, `~/.aws/credentials`, or an EC2/ECS/EKS instance role. If no credentials are found, a clear warning is printed and the scan continues without Cloud Audit.
+
 ### Layer 3 — Kubernetes runtime
 
 Kernel-level visibility into pod behavior via Tetragon. Identifies which workloads are actively making AI calls — including workloads with no corresponding source code. Works with any CNI. Falls back to Kubernetes API discovery if Tetragon is unavailable.

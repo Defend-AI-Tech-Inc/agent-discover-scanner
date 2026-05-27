@@ -155,11 +155,19 @@ def _run_dry_run(path: str, skip_layers: Optional[str], duration: int, daemon: b
     except ImportError:
         pass
 
+    boto3_ok = False
+    try:
+        import boto3  # noqa: F401
+        boto3_ok = True
+    except ImportError:
+        pass
+
     rows = [
         ("1", "Source code (Python/JS AST)", True, "built-in"),
         ("2", "Network monitoring", psutil_ok, "psutil"),
         ("3", "Kubernetes runtime", _check_dependency("kubectl"), "kubectl"),
         ("4", "Endpoint discovery", _check_dependency("osqueryi"), "osquery"),
+        ("5", "Cloud Audit (AWS CloudTrail)", boto3_ok, "boto3"),
     ]
 
     console.print("\n[bold]Layer availability:[/bold]")
@@ -301,10 +309,31 @@ def execute_scan_all(
     src_repo: Optional[str] = None,
     src_repo_ttl: int = 3600,
     summary: bool = False,
+    # Layer 5 — Cloud Audit (v2.7.0+)
+    cloud_audit_enabled: bool = False,
+    cloud_audit_region: Optional[str] = None,
+    cloud_audit_hours: int = 0,
+    cloud_audit_lake_arn: Optional[str] = None,
+    azure_monitor_enabled: bool = False,
+    gcp_audit_enabled: bool = False,
+    # Backward-compat aliases (deprecated; map to cloud_audit_* above)
+    cloudtrail_enabled: bool = False,
+    cloudtrail_region: Optional[str] = None,
     cloudtrail_hours: int = 0,
     cloudtrail_lake_arn: Optional[str] = None,
 ) -> Optional[dict]:
     """Run full or partial scan-all. Returns report dict, or None if MCP-only early exit."""
+    # Merge deprecated cloudtrail_* aliases into cloud_audit_* params so that
+    # old callers (tests, third-party integrations) continue to work unchanged.
+    if cloudtrail_enabled:
+        cloud_audit_enabled = True
+    if cloudtrail_region:
+        cloud_audit_region = cloud_audit_region or cloudtrail_region
+    if cloudtrail_hours:
+        cloud_audit_hours = cloud_audit_hours or cloudtrail_hours
+    if cloudtrail_lake_arn:
+        cloud_audit_lake_arn = cloud_audit_lake_arn or cloudtrail_lake_arn
+
     if dry_run:
         _run_dry_run(path, skip_layers, duration, daemon)
 
@@ -351,6 +380,7 @@ def execute_scan_all(
     layer2_json = output_dir / "layer2_network.json"
     layer3_jsonl = output_dir / "layer3_k8s.jsonl"
     layer4_json = output_dir / "layer4_endpoint.json"
+    layer5_json = output_dir / "layer5_cloud_audit.json"
     inventory_path = output_dir / "agent_inventory.json"
 
     effective_layer: Optional[str] = None
@@ -494,6 +524,7 @@ def execute_scan_all(
     network_findings: list = []
     layer3_findings: list = []
     layer4_findings: list = []
+    cloud_audit_findings: list = []
     findings_lock = threading.Lock()
 
     stop_event = threading.Event()
@@ -578,40 +609,6 @@ def execute_scan_all(
                         "process_name": mf["process_name"],
                         "timestamp": mf["timestamp"],
                     })
-
-            # CloudTrail Bedrock detection — supplements psutil when Bedrock
-            # endpoints are invisible to passive network monitoring.
-            if cloudtrail_hours > 0 or cloudtrail_lake_arn:
-                try:
-                    from agent_discover_scanner.detectors.cloudtrail import (
-                        run_cloudtrail_detection,
-                    )
-
-                    ct_source = "CloudTrail Lake" if cloudtrail_lake_arn else "CloudTrail"
-                    console.print(
-                        f"[dim]  Querying {ct_source} for Bedrock events "
-                        f"(last {cloudtrail_hours}h)...[/dim]"
-                    )
-                    ct_findings = run_cloudtrail_detection(
-                        lookback_hours=cloudtrail_hours or 1,
-                        lake_arn=cloudtrail_lake_arn,
-                    )
-                    if ct_findings:
-                        console.print(
-                            f"  [cyan]✓[/cyan] CloudTrail: "
-                            f"{len(ct_findings)} Bedrock event(s) detected"
-                        )
-                        # Merge into nf; deduplicate by provider+timestamp
-                        existing_keys = {
-                            (f.get("provider"), f.get("timestamp")) for f in nf
-                        }
-                        for ctf in ct_findings:
-                            key = (ctf.get("provider"), ctf.get("timestamp"))
-                            if key not in existing_keys:
-                                nf.append(ctf)
-                                existing_keys.add(key)
-                except Exception as ct_exc:
-                    logger.warning("CloudTrail detection error: %s", ct_exc)
 
             summary_with_findings = {**summary, "findings": nf}
             _rotate_file_if_needed(layer2_json, max_log_size_bytes, max_log_backups)
@@ -743,6 +740,44 @@ def execute_scan_all(
         except Exception as e:
             console.print(f"[red]Layer 4 endpoint scan failed:[/red] {e}")
 
+    def run_layer5_once() -> None:
+        """Layer 5 — Cloud Audit: query cloud provider audit logs for AI invocations."""
+        nonlocal cloud_audit_findings
+        _run_l5 = cloud_audit_enabled or cloud_audit_hours > 0 or bool(cloud_audit_lake_arn)
+        if not _run_l5:
+            return
+        _effective_hours = cloud_audit_hours if cloud_audit_hours > 0 else 1
+        try:
+            from agent_discover_scanner.detectors.cloud_audit import (
+                run_cloud_audit_detection,
+            )
+
+            ct_source = "CloudTrail Lake" if cloud_audit_lake_arn else "CloudTrail"
+            console.print(
+                f"[bold green]☁  Querying {ct_source} for cloud AI events "
+                f"(Layer 5, last {_effective_hours}h)...[/bold green]"
+            )
+            l5_findings = run_cloud_audit_detection(
+                hours_back=_effective_hours,
+                region=cloud_audit_region,
+                lake_arn=cloud_audit_lake_arn,
+                azure_monitor_enabled=azure_monitor_enabled,
+                gcp_audit_enabled=gcp_audit_enabled,
+                _warn_fn=lambda msg: console.print(f"[yellow]⚠  {msg}[/yellow]"),
+            )
+            if l5_findings:
+                console.print(
+                    f"  [cyan]✓[/cyan] Layer 5 (Cloud Audit): "
+                    f"{len(l5_findings)} event(s) detected"
+                )
+            _rotate_file_if_needed(layer5_json, max_log_size_bytes, max_log_backups)
+            layer5_json.write_text(json.dumps({"findings": l5_findings}, indent=2))
+            if not daemon:
+                with findings_lock:
+                    cloud_audit_findings = l5_findings
+        except Exception as exc:
+            logger.warning("Layer 5 (Cloud Audit) error: %s", exc)
+
     def run_src_repo_once() -> str:
         """Clone (remote) or reuse (local) src_repo, run Layer 1, merge SARIF. Returns outcome."""
         if not src_repo or is_skipped(1):
@@ -839,6 +874,31 @@ def execute_scan_all(
                 )
         except Exception:
             pass
+        # Merge Layer 5 (Cloud Audit) findings into the network findings list so
+        # that the correlator can pair them against Layer 1 code findings.
+        try:
+            if daemon:
+                if layer5_json.exists():
+                    l5_data = json.loads(layer5_json.read_text())
+                    nf = nf + (l5_data.get("findings") or [])
+            else:
+                with findings_lock:
+                    l5 = list(cloud_audit_findings)
+                if not l5 and layer5_json.exists():
+                    try:
+                        l5_data = json.loads(layer5_json.read_text())
+                        l5 = l5_data.get("findings") or []
+                    except Exception:
+                        l5 = []
+                if l5:
+                    existing_keys = {(f.get("provider"), f.get("timestamp")) for f in nf}
+                    for f in l5:
+                        key = (f.get("provider"), f.get("timestamp"))
+                        if key not in existing_keys:
+                            nf.append(f)
+                            existing_keys.add(key)
+        except Exception:
+            pass
         console.print("[bold cyan]🔗 Correlating findings...[/bold cyan]\n")
         inventory = CorrelationEngine.correlate(
             code_findings=cf,
@@ -890,7 +950,7 @@ def execute_scan_all(
     # Non-daemon: run once with layers in parallel
     hra_result: dict = {}
     if not daemon:
-        with ThreadPoolExecutor(max_workers=4) as executor:
+        with ThreadPoolExecutor(max_workers=5) as executor:
             futures = []
             # Fast tasks: Layer 1 + 4
             futures.append(executor.submit(run_layer1_once))
@@ -898,6 +958,8 @@ def execute_scan_all(
             # Long-running tasks: Layer 2 + 3
             futures.append(executor.submit(run_layer2_once))
             futures.append(executor.submit(run_layer3_once))
+            # Layer 5 — Cloud Audit (runs independently of Layers 1-4)
+            futures.append(executor.submit(run_layer5_once))
             wait(futures)
 
         if src_repo and not is_skipped(1):

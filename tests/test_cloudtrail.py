@@ -654,3 +654,105 @@ class TestCloudtrailBedrockCorrelation:
             layer1_findings=[l1], layer2_findings=[l2]
         )
         assert items[0].framework in ("LangChain", "LangChain/LangGraph")
+
+
+# ---------------------------------------------------------------------------
+# _warn_fn callback — credential and import-error signal propagation
+# ---------------------------------------------------------------------------
+
+
+class TestRunCloudtrailDetectionWarnFn:
+    """run_cloudtrail_detection._warn_fn is called on skip conditions."""
+
+    def test_warn_fn_called_on_no_credentials(self):
+        """_warn_fn receives 'no AWS credentials' message on NoCredentialsError."""
+        mock_client = MagicMock()
+        mock_client.get_paginator.side_effect = _NoCredentialsError()
+
+        warnings: list[str] = []
+        with _inject_boto3(mock_client):
+            run_cloudtrail_detection(lookback_hours=1, _warn_fn=warnings.append)
+
+        assert any("no AWS credentials" in w for w in warnings), warnings
+
+    def test_warn_fn_called_on_boto3_missing(self):
+        """_warn_fn receives 'boto3 not installed' message when boto3 is absent."""
+        warnings: list[str] = []
+        no_modules = {"boto3": None, "botocore": None, "botocore.exceptions": None}
+        with patch.dict("sys.modules", no_modules):
+            run_cloudtrail_detection(lookback_hours=1, _warn_fn=warnings.append)
+
+        assert any("boto3 not installed" in w for w in warnings), warnings
+
+    def test_warn_fn_none_is_safe_on_no_credentials(self):
+        """_warn_fn=None (default) does not raise when credentials are missing."""
+        mock_client = MagicMock()
+        mock_client.get_paginator.side_effect = _NoCredentialsError()
+
+        with _inject_boto3(mock_client):
+            result = run_cloudtrail_detection(lookback_hours=1)  # no _warn_fn
+
+        assert result == []
+
+    def test_warn_fn_not_called_on_successful_run(self):
+        """_warn_fn is NOT called when detection succeeds normally."""
+        ct_event = _make_ct_event(event_name="InvokeModel")
+        paginator = MagicMock()
+        paginator.paginate.return_value = [{"Events": [ct_event]}]
+        mock_client = MagicMock()
+        mock_client.get_paginator.return_value = paginator
+
+        warnings: list[str] = []
+        with _inject_boto3(mock_client):
+            run_cloudtrail_detection(lookback_hours=1, _warn_fn=warnings.append)
+
+        assert warnings == [], f"Unexpected warnings: {warnings}"
+
+    def test_no_credentials_message_exact_text(self):
+        """The canonical credential-skip message matches what callers depend on."""
+        mock_client = MagicMock()
+        mock_client.get_paginator.side_effect = _NoCredentialsError()
+
+        warnings: list[str] = []
+        with _inject_boto3(mock_client):
+            run_cloudtrail_detection(lookback_hours=1, _warn_fn=warnings.append)
+
+        assert warnings == ["CloudTrail scan skipped: no AWS credentials"]
+
+
+# ---------------------------------------------------------------------------
+# Region parameter threading
+# ---------------------------------------------------------------------------
+
+
+class TestRunCloudtrailDetectionRegion:
+    """region= is forwarded to boto3.client() as region_name."""
+
+    def test_region_forwarded_to_boto3_client(self):
+        """Specified region is passed as region_name to the boto3 cloudtrail client."""
+        paginator = MagicMock()
+        paginator.paginate.return_value = [{"Events": []}]
+        mock_client = MagicMock()
+        mock_client.get_paginator.return_value = paginator
+
+        with _inject_boto3(mock_client) as mock_boto3:
+            run_cloudtrail_detection(lookback_hours=1, region="eu-west-1")
+
+        # boto3.client should have been called with region_name="eu-west-1"
+        calls = mock_boto3.client.call_args_list
+        region_args = [
+            kw.get("region_name") for _, kw in (c for c in calls)
+        ]
+        assert "eu-west-1" in region_args, f"region_name not forwarded; calls: {calls}"
+
+    def test_region_none_does_not_fail(self):
+        """region=None (default) is handled without error."""
+        paginator = MagicMock()
+        paginator.paginate.return_value = [{"Events": []}]
+        mock_client = MagicMock()
+        mock_client.get_paginator.return_value = paginator
+
+        with _inject_boto3(mock_client):
+            result = run_cloudtrail_detection(lookback_hours=1, region=None)
+
+        assert isinstance(result, list)

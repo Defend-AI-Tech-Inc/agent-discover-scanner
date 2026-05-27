@@ -623,21 +623,46 @@ def scan_all(
         "--stance",
         help="Policy stance for --emit-mcpfw-policy: strict, balanced (default), or monitor",
     ),
-    cloudtrail_hours: int = typer.Option(
-        0,
-        "--cloudtrail-hours",
+    cloud_audit: bool = typer.Option(
+        False,
+        "--cloud-audit/--no-cloud-audit",
         help=(
-            "Query CloudTrail for Bedrock invocation events covering this many hours back "
-            "(0 = disabled). Requires cloudtrail:LookupEvents permission."
+            "Enable Layer 5 Cloud Audit detection (AWS CloudTrail for Bedrock invocations). "
+            "Use when Layer 2 (psutil) cannot see Bedrock traffic (e.g. SSE proxy, VPC endpoint). "
+            "Requires cloudtrail:LookupEvents permission."
         ),
     ),
-    cloudtrail_lake_arn: Optional[str] = typer.Option(
+    cloud_audit_region: str = typer.Option(
+        "us-east-1",
+        "--cloud-audit-region",
+        help="AWS region to query for Cloud Audit events (default: us-east-1).",
+    ),
+    cloud_audit_hours: int = typer.Option(
+        0,
+        "--cloud-audit-hours",
+        help=(
+            "Lookback window in hours for Cloud Audit queries (default 1 when --cloud-audit is set). "
+            "Setting this > 0 also implicitly enables Cloud Audit. "
+            "Requires cloudtrail:LookupEvents permission."
+        ),
+    ),
+    cloud_audit_lake_arn: Optional[str] = typer.Option(
         None,
-        "--cloudtrail-lake-arn",
+        "--cloud-audit-lake-arn",
         help=(
             "CloudTrail Lake event data store ARN for near-real-time Bedrock detection (~60s delay). "
             "Requires cloudtrail:StartQuery and cloudtrail:GetQueryResults permissions."
         ),
+    ),
+    azure_monitor: bool = typer.Option(
+        False,
+        "--azure-monitor/--no-azure-monitor",
+        help="[Preview] Enable Azure Monitor detection for Azure OpenAI invocations (coming soon).",
+    ),
+    gcp_audit: bool = typer.Option(
+        False,
+        "--gcp-audit/--no-gcp-audit",
+        help="[Preview] Enable GCP Cloud Audit Log detection for Vertex AI invocations (coming soon).",
     ),
 ):
     """
@@ -677,8 +702,12 @@ def scan_all(
         src_repo=src_repo,
         src_repo_ttl=src_repo_ttl,
         summary=summary,
-        cloudtrail_hours=cloudtrail_hours,
-        cloudtrail_lake_arn=cloudtrail_lake_arn,
+        cloud_audit_enabled=cloud_audit,
+        cloud_audit_region=cloud_audit_region,
+        cloud_audit_hours=cloud_audit_hours,
+        cloud_audit_lake_arn=cloud_audit_lake_arn,
+        azure_monitor_enabled=azure_monitor,
+        gcp_audit_enabled=gcp_audit,
     )
 
     if emit_mcpfw_policy and report and not daemon:
@@ -848,6 +877,45 @@ def audit(
         "-v",
         help="Show detailed output including Layer 3/Kubernetes errors",
     ),
+    cloud_audit: bool = typer.Option(
+        False,
+        "--cloud-audit/--no-cloud-audit",
+        help=(
+            "Enable Layer 5 Cloud Audit detection (AWS CloudTrail for Bedrock invocations). "
+            "Requires cloudtrail:LookupEvents permission."
+        ),
+    ),
+    cloud_audit_region: str = typer.Option(
+        "us-east-1",
+        "--cloud-audit-region",
+        help="AWS region to query for Cloud Audit events (default: us-east-1).",
+    ),
+    cloud_audit_hours: int = typer.Option(
+        0,
+        "--cloud-audit-hours",
+        help=(
+            "Lookback window in hours for Cloud Audit queries (default 1 when --cloud-audit is set). "
+            "Requires cloudtrail:LookupEvents permission."
+        ),
+    ),
+    cloud_audit_lake_arn: Optional[str] = typer.Option(
+        None,
+        "--cloud-audit-lake-arn",
+        help=(
+            "CloudTrail Lake event data store ARN for near-real-time Bedrock detection (~60s delay). "
+            "Requires cloudtrail:StartQuery and cloudtrail:GetQueryResults permissions."
+        ),
+    ),
+    azure_monitor: bool = typer.Option(
+        False,
+        "--azure-monitor/--no-azure-monitor",
+        help="[Preview] Enable Azure Monitor detection for Azure OpenAI invocations (coming soon).",
+    ),
+    gcp_audit: bool = typer.Option(
+        False,
+        "--gcp-audit/--no-gcp-audit",
+        help="[Preview] Enable GCP Cloud Audit Log detection for Vertex AI invocations (coming soon).",
+    ),
 ):
     """
     Run the full scan-all pipeline into output/raw/, then write AIBOM JSON and Markdown reports
@@ -882,6 +950,12 @@ def audit(
         verbose=verbose,
         scan_output_format="text",
         layer=None,
+        cloud_audit_enabled=cloud_audit,
+        cloud_audit_region=cloud_audit_region,
+        cloud_audit_hours=cloud_audit_hours,
+        cloud_audit_lake_arn=cloud_audit_lake_arn,
+        azure_monitor_enabled=azure_monitor,
+        gcp_audit_enabled=gcp_audit,
     )
     if report is None:
         console.print("[red]Audit did not produce a correlation report.[/red]")

@@ -1,6 +1,6 @@
 # CLAUDE.md — AgentDiscover Scanner
 
-Open-source AI agent discovery tool (v2.5.0) published on PyPI as `agent-discover-scanner`.
+Open-source AI agent discovery tool (v2.7.0) published on PyPI as `agent-discover-scanner`.
 Part of the [DefendAI](https://defendai.ai) platform for autonomous AI governance.
 MIT licensed. Maintained by Mohamed Waseem / DefendAI.
 
@@ -49,6 +49,14 @@ src/agent_discover_scanner/    # Main package
   monitors/                    # Layer 3 — K8s/Tetragon monitor
   layer4/                      # Layer 4 — osquery endpoint discovery
   reports/                     # Layer 4 report generation
+  detectors/                   # Layer 5 — Cloud Audit detectors (v2.7.0+)
+    cloud_audit/               # Package: base ABC, AWS CloudTrail, Azure/GCP stubs
+      __init__.py              # Auto-discovery + run_cloud_audit_detection()
+      base.py                  # CloudAuditDetector ABC + CloudAuditFinding dataclass
+      aws_cloudtrail.py        # AWS CloudTrail + Lake — GA
+      azure_monitor.py         # Azure Monitor — Preview stub
+      gcp_audit.py             # GCP Cloud Audit Logs — Preview stub
+    cloudtrail.py              # Backward-compat shim → re-exports from cloud_audit/
 
 tests/                         # pytest test suite
   fixtures/                    # Python/JS files used as detection test inputs
@@ -108,10 +116,13 @@ From `.cursor/rules/architecture.mdc`:
 | 2 | Live network | psutil connection observation | All (Linux needs root) |
 | 3 | K8s runtime | Tetragon/eBPF events or K8s API fallback | Linux (eBPF); all (K8s API) |
 | 4 | Endpoint | osquery — packages, apps, connections, browser history | All (osquery required) |
+| 5 | Cloud Audit | AWS CloudTrail (GA); Azure Monitor / GCP Cloud Audit Logs (stubs) | All (boto3 required for AWS) |
 
 Layer 3 (eBPF) is Linux-only. On macOS/Windows, it is skipped automatically and the scan continues with Layers 1, 2, 4.
 
-Cross-layer correlation: an agent seen in code (L1) AND observed at runtime (L2 or L3) is CONFIRMED. Runtime activity with no L1 match → GHOST.
+Layer 5 runs independently alongside Layers 1–4 (separate thread in ThreadPoolExecutor). Findings are written to `layer5_cloud_audit.json` and merged into the network findings list before correlation. Enable with `--cloud-audit` (or `--cloud-audit-hours N`).
+
+Cross-layer correlation: an agent seen in code (L1) AND observed at runtime (L2, L3, or L5) is CONFIRMED. Runtime activity with no L1 match → GHOST.
 
 ---
 
@@ -120,16 +131,27 @@ Cross-layer correlation: an agent seen in code (L1) AND observed at runtime (L2 
 Both `agent-discover-scanner` and `agent-discover` are valid entry points.
 
 ```bash
-# Full 4-layer scan (primary command)
+# Full 5-layer scan (primary command)
 agent-discover-scanner scan-all PATH [--duration 60] [--output ./results] [--format text|json]
   [--skip-layers 3] [--layer3-file PATH] [--daemon] [--verbose]
   [--platform] [--api-key KEY] [--tenant-token TOKEN]
   [--wawsdb-url URL] [--platform-interval 5]
   [--max-log-size 50] [--max-log-backups 5]
   [--layer code|network|k8s|endpoint|mcp]   # single-facet mode
+  # Layer 5 — Cloud Audit (v2.7.0+)
+  [--cloud-audit | --no-cloud-audit]         # enable Layer 5 Cloud Audit detection (default: false)
+  [--cloud-audit-region TEXT]                # AWS region (default: us-east-1)
+  [--cloud-audit-hours INTEGER]              # lookback window (default 1 when --cloud-audit set)
+  [--cloud-audit-lake-arn TEXT]              # CloudTrail Lake ARN (near-real-time)
+  [--azure-monitor | --no-azure-monitor]     # [Preview] Azure OpenAI detection (stub)
+  [--gcp-audit | --no-gcp-audit]             # [Preview] Vertex AI detection (stub)
 
 # Audit mode (v2.5.0) — writes aibom.json, ghost-agents.md, mcp-report.md, summary.md
+# Also accepts all --cloud-audit-* options.
 agent-discover-scanner audit PATH [--output ./defendai-audit] [--duration 60]
+  [--cloud-audit | --no-cloud-audit] [--cloud-audit-region TEXT]
+  [--cloud-audit-hours INTEGER] [--cloud-audit-lake-arn TEXT]
+  [--azure-monitor] [--gcp-audit]
 
 # Individual layers
 agent-discover-scanner scan PATH             # Layer 1 only (SARIF output)
@@ -193,7 +215,7 @@ Versioning follows semver. Version is set in `pyproject.toml` and read at runtim
 5. Add a test in `tests/test_scanner.py` covering both.
 6. Include false-positive analysis in the PR description (see CONTRIBUTING.md).
 
-For JS/TS signatures, extend `js_signatures.py` (esprima-based). For MCP patterns, extend `mcp_detector.py`. For high-risk agent detection, extend `high_risk_agents.py` — detection must use corroborated signals, never a single port or file path.
+For JS/TS signatures, extend `js_signatures.py` (esprima-based). For MCP patterns, extend `mcp_detector.py`. For high-risk agent detection, extend `high_risk_agents.py` — detection must use corroborated signals, never a single port or file path. For Layer 5 Cloud Audit detection, see `detectors/cloud_audit/` — the public entry point is `run_cloud_audit_detection(hours_back, region, lake_arn, _warn_fn)` in `detectors/cloud_audit/__init__.py`. Called from `scan_runner.run_layer5_once()` when `cloud_audit_enabled=True` or `cloud_audit_hours > 0` or `cloud_audit_lake_arn` is set. To add a new cloud provider: create a `CloudAuditDetector` subclass in `detectors/cloud_audit/<provider>.py` with `provider = "<name>"`, `is_available()`, and `detect(hours_back)`. Auto-discovery picks it up automatically.
 
 ---
 

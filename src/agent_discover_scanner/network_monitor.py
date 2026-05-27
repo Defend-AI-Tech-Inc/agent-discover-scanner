@@ -9,11 +9,65 @@ import psutil
 import socket
 import time
 import re
+import logging
 from typing import List, Dict, Optional
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 import json
+
+import httpx
+
+_logger = logging.getLogger(__name__)
+
+# Compiled IPv4 pattern — used to distinguish raw IPs from resolved hostnames.
+_IPv4_RE = re.compile(r'^\d{1,3}(?:\.\d{1,3}){3}$')
+
+_BEDROCK_RANGES_URL = "https://ranges.defendai.ai/bedrock.json"
+_BEDROCK_FALLBACK_PATH = Path(__file__).parent / "data" / "bedrock_ips_fallback.json"
+
+# Module-level cache — None means "not yet fetched"; populated on first call.
+_bedrock_ip_cache: set[str] | None = None
+
+
+def fetch_bedrock_ip_ranges() -> set[str]:
+    """Return the set of Bedrock endpoint IPs to use for classification.
+
+    Fetch order:
+    1. Module-level cache (populated after the first successful call).
+    2. Live feed at ``_BEDROCK_RANGES_URL`` (3-second timeout).
+    3. Bundled fallback at ``data/bedrock_ips_fallback.json``.
+
+    Returns an empty set if every source fails so callers degrade gracefully.
+    """
+    global _bedrock_ip_cache
+    if _bedrock_ip_cache is not None:
+        return _bedrock_ip_cache
+
+    # -- Live feed -------------------------------------------------------
+    try:
+        resp = httpx.get(_BEDROCK_RANGES_URL, timeout=3.0)
+        resp.raise_for_status()
+        ips: set[str] = set(resp.json().get("flat_ips", []))
+        if ips:
+            _bedrock_ip_cache = ips
+            _logger.debug("Bedrock IP ranges loaded from live feed (%d IPs).", len(ips))
+            return _bedrock_ip_cache
+        _logger.debug("Live Bedrock IP feed returned an empty flat_ips list; trying fallback.")
+    except Exception as exc:  # network errors, JSON decode, non-2xx, …
+        _logger.debug("Bedrock IP ranges feed unavailable (%s); using bundled fallback.", exc)
+
+    # -- Bundled fallback ------------------------------------------------
+    try:
+        data = json.loads(_BEDROCK_FALLBACK_PATH.read_text(encoding="utf-8"))
+        ips = set(data.get("flat_ips", []))
+        _bedrock_ip_cache = ips
+        _logger.debug("Bedrock IP ranges loaded from fallback file (%d IPs).", len(ips))
+    except Exception as exc:
+        _logger.warning("Could not load Bedrock IP fallback file: %s", exc)
+        _bedrock_ip_cache = set()
+
+    return _bedrock_ip_cache
 
 @dataclass
 class AIConnection:
@@ -129,33 +183,44 @@ class NetworkMonitor:
         return any(db in hostname_lower for db in self.VECTOR_DBS.keys())
     
     def _classify_ai_service(self, hostname: str) -> Optional[str]:
-        """Classify hostname as AI service or vector DB"""
+        """Classify hostname as AI service or vector DB.
+
+        The lookup order is:
+        1. Bedrock IP set — checked first when *hostname* is a bare IPv4 address
+           (i.e. reverse-DNS resolution failed or returned the raw IP).
+        2. AI service domain substrings.
+        3. Vector-DB domain substrings.
+        4. Encoded-IP heuristics for amazonaws.com reverse-DNS names.
+        """
+        # -- 1. Bedrock IP set (raw IPv4 only) ---------------------------
+        if _IPv4_RE.match(hostname):
+            if hostname in fetch_bedrock_ip_ranges():
+                return "AWS Bedrock"
+
         hostname_lower = hostname.lower()
-        
-        # Check AI services first
+
+        # -- 2. AI service domain substrings ----------------------------
         for domain, service_name in self.AI_SERVICES.items():
             if domain in hostname_lower:
                 return service_name
-        
-        # Check vector DBs
+
+        # -- 3. Vector DB domain substrings -----------------------------
         for domain, service_name in self.VECTOR_DBS.items():
             if domain in hostname_lower:
                 return service_name
-        
-        # Handle generic AWS/cloud hostnames that might be Anthropic
-        # e.g., "ec2-52-85-xxx.compute-1.amazonaws.com"
+
+        # -- 4. Encoded-IP heuristics for amazonaws.com names -----------
+        # e.g. "ec2-52-85-xxx.compute-1.amazonaws.com"
         if "amazonaws.com" in hostname_lower or "compute-1.amazonaws.com" in hostname_lower:
-            # Extract IP-like patterns from hostname
             ip_match = re.search(r'(\d+)-(\d+)-(\d+)', hostname_lower)
             if ip_match:
                 first_octet = ip_match.group(1)
                 second_octet = ip_match.group(2)
-                # Check if it matches Anthropic IP patterns
                 if first_octet == "52" and second_octet == "85":
                     return "Anthropic API"
                 elif first_octet == "54" and second_octet in ["240", "241", "242", "243"]:
                     return "Anthropic API"
-        
+
         return None
     
     def _classify_ai_service_by_ip(self, ip: str) -> Optional[str]:

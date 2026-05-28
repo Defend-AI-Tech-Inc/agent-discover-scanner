@@ -1,6 +1,6 @@
 # CLAUDE.md — AgentDiscover Scanner
 
-Open-source AI agent discovery tool (v2.7.0) published on PyPI as `agent-discover-scanner`.
+Open-source AI agent discovery tool (v2.7.1) published on PyPI as `agent-discover-scanner`.
 Part of the [DefendAI](https://defendai.ai) platform for autonomous AI governance.
 MIT licensed. Maintained by Mohamed Waseem / DefendAI.
 
@@ -8,7 +8,7 @@ MIT licensed. Maintained by Mohamed Waseem / DefendAI.
 
 ## What this project does
 
-AgentDiscover Scanner discovers, classifies, and inventories autonomous AI agents running across an infrastructure. It runs four detection layers simultaneously and correlates them into a unified agent inventory with five classifications:
+AgentDiscover Scanner discovers, classifies, and inventories autonomous AI agents running across an infrastructure. It runs five detection layers simultaneously and correlates them into a unified agent inventory with five classifications:
 
 | Class | Meaning | Risk |
 |---|---|---|

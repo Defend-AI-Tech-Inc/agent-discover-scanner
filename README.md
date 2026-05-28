@@ -265,7 +265,15 @@ agent-discover-scanner scan-all ~/projects --dry-run
 
 ![GHOST detection mechanism](./docs/ghost-detection.svg)
 
-AgentDiscover Scanner runs four detection layers simultaneously and correlates them into a single agent inventory. Each layer sees something the others can't.
+AgentDiscover Scanner runs **five detection layers** simultaneously and correlates them into a single agent inventory. Each layer sees something the others can't.
+
+| Layer | Name | Technology | Requirements |
+|---|---|---|---|
+| 1 | Source code | Python AST + esprima (JS/TS) | None |
+| 2 | Live network | psutil connection observation | Linux: root/sudo |
+| 3 | Kubernetes runtime | Tetragon/eBPF events; K8s API fallback | Linux (eBPF); kubectl (K8s API) |
+| 4 | Endpoint discovery | osquery — packages, apps, browser history | osquery (optional) |
+| 5 | Cloud Audit | AWS CloudTrail, Azure Monitor (stub), GCP Audit Logs (stub) | AWS credentials (boto3) |
 
 ![AgentDiscover detection pipeline](./docs/architecture.svg)
 
@@ -582,7 +590,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - uses: Defend-AI-Tech-Inc/agent-discover-scanner@v2.6.0
+      - uses: Defend-AI-Tech-Inc/agent-discover-scanner@v2.7.1
         with:
           path: '.'               # directory to scan (default: .)
           upload-sarif: 'true'    # post findings to GitHub Security tab (default: true)
@@ -714,6 +722,7 @@ Expected output: 2 CONFIRMED agents (crewai-agent, langchain-agent), 1 GHOST age
 | Kubernetes runtime | kubectl + read access (K8s API path) · Helm 3+ + root/sudo for Tetragon/eBPF (Linux only)         |
 | Endpoint discovery | osquery (optional — graceful degradation if not installed)                                         |
 | Layer 3 (eBPF)     | Linux only — unavailable on macOS and Windows. K8s API path works on all platforms.               |
+| Cloud Audit (Layer 5) | AWS credentials — boto3 credential chain (`AWS_ACCESS_KEY_ID`, `~/.aws/credentials`, or instance role). If credentials are absent, the scan continues without Cloud Audit. |
 | Platform upload    | DefendAI API key ([defendai.ai](https://defendai.ai))                                              |
 
 Full Kubernetes setup: `install.sh` handles Helm, runtime monitoring setup, and permissions automatically.
@@ -726,7 +735,7 @@ AgentDiscover Scanner is the **discovery layer** of the DefendAI platform.
 
 | Component                 | Status         | Description                                                           |
 | ------------------------- | -------------- | --------------------------------------------------------------------- |
-| **AgentDiscover Scanner** | ✅ Open Source (v2.5.0) | Discover and classify AI agents across your environment  |
+| **AgentDiscover Scanner** | ✅ Open Source (v2.7.1) | Discover and classify AI agents across your environment  |
 | **defendai-agent**        | 🧪 Beta        | MITM proxy for real-time AI traffic inspection and policy enforcement |
 | **Correlation Engine**    | ✅ Available    | Cross-machine identity resolution and behavioral drift detection      |
 | **Policy Engine**         | 🚧 Coming Soon | Define and enforce agent behavior rules                               |

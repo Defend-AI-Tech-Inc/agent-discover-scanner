@@ -503,6 +503,17 @@ class CorrelationEngine:
         )
 
     @classmethod
+    def _is_bedrock_finding(cls, cf: dict) -> bool:
+        """Return True if a code finding is Bedrock-related (for Layer 5 matching).
+
+        Matches rule DAI007 (explicit AWS Bedrock signature) or any finding whose
+        message mentions "bedrock" (e.g. LangChain/LangGraph wrapping Bedrock).
+        """
+        rule_id = cf.get("rule_id") or ""
+        message = (cf.get("message") or "").lower()
+        return rule_id == "DAI007" or "bedrock" in message
+
+    @classmethod
     def _workload_matches_finding(cls, workload: str, finding: Dict) -> bool:
         """Return True if workload name fuzzy-matches the code finding's framework (rule). Layer 3 (K8s) only."""
         workload_lower = (workload or "").lower()
@@ -556,12 +567,13 @@ class CorrelationEngine:
         known_apps: Optional[frozenset] = None,
     ) -> Dict[str, List[AgentInventoryItem]]:
         """
-        Correlate code and network/layer3/layer4 findings.
+        Correlate code and network/layer3/layer4/layer5 findings.
 
-        A finding is CONFIRMED if it appears in code (Layer 1) + any of Layer 2/3/4.
+        A finding is CONFIRMED if it appears in code (Layer 1) + any of Layer 2/3/4/5.
         Populates detection_layers, k8s fields from Layer 3, endpoint fields from Layer 4.
         Risk is escalated by one level if detected in Layer 3 (runtime eBPF).
         Layer 2/4 runtime-only findings: if process is a known desktop app → shadow_ai_usage; else → ghost.
+        Layer 5 (CloudTrail) Bedrock-only findings with no L1 match → ghost with detection_layers=["layer5"].
 
         Returns:
             Dictionary with classifications: confirmed, zombie, ghost, unknown, shadow_ai_usage
@@ -573,12 +585,29 @@ class CorrelationEngine:
         layer4_findings = layer4_findings or []
         layer3_findings = layer3_findings or []
 
-        # Layer 2: active providers from network_findings.
+        # Split network_findings into Layer 2 (live network) and Layer 5 (cloud audit).
+        # Building active_providers from l2_network only prevents Layer 5 CloudTrail
+        # findings (process_name=None) from overwriting Layer 2 process information,
+        # which would misclassify a Chrome→Bedrock Shadow AI finding as a GHOST (Bug 3).
+        l2_network = [
+            nf for nf in network_findings
+            if nf.get("detection_layer") != "layer5_cloud_audit"
+        ]
+        l5_cloud_audit = [
+            nf for nf in network_findings
+            if nf.get("detection_layer") == "layer5_cloud_audit"
+        ]
+        l5_bedrock = [
+            nf for nf in l5_cloud_audit
+            if (nf.get("provider") or "").lower() == "bedrock"
+        ]
+
+        # Layer 2: active providers from l2_network (live network only — never Layer 5).
         #
         # IMPORTANT: A runtime-only process/workload is only eligible for GHOST if we have a
         # confirmed active network connection to a known AI provider endpoint.
         active_providers = {}
-        for nf in network_findings:
+        for nf in l2_network:
             provider = (nf.get("provider") or "unknown").lower()
             if provider in cls._PROVIDERS:
                 active_providers[provider] = {
@@ -623,7 +652,7 @@ class CorrelationEngine:
             possible = cls._code_finding_providers(cf)
 
             # Layer 2: strict matching — process_name must be a known AI executor (no fuzzy match)
-            if network_findings:
+            if l2_network:
                 for p in possible:
                     if p in active_providers and cls._is_known_executor(
                         active_providers[p].get("process") or ""
@@ -661,6 +690,13 @@ class CorrelationEngine:
                         match_provider = match_provider or p
                         detection_layers.append("layer4")
                         break
+
+            # Layer 5 (Cloud Audit): CloudTrail Bedrock evidence — no process-name check needed.
+            # An IAM API call recorded in CloudTrail is itself the confirmation signal.
+            if l5_bedrock and "layer5" not in detection_layers:
+                if cls._is_bedrock_finding(cf):
+                    detection_layers.append("layer5")
+                    match_provider = match_provider or "bedrock"
 
             confirmed = len(detection_layers) > 1
             if confirmed:
@@ -706,6 +742,17 @@ class CorrelationEngine:
                     if process_name is None:
                         process_name = endpoint_process
 
+            # Layer 5 supplemental fill: use CloudTrail timestamp / IAM principal
+            # when Layer 2 did not supply them (process_name stays None if already set).
+            if "layer5" in detection_layers and l5_bedrock:
+                _latest_l5 = max(l5_bedrock, key=lambda _nf: _nf.get("timestamp") or "")
+                if last_seen is None:
+                    last_seen = _latest_l5.get("timestamp")
+                if network_provider is None:
+                    network_provider = "bedrock"
+                if process_name is None:
+                    process_name = _latest_l5.get("username") or None
+
             classification = "confirmed" if confirmed else "unknown"
             item = AgentInventoryItem(
                 agent_id=agent_id,
@@ -736,7 +783,7 @@ class CorrelationEngine:
                 pass
             inventory[classification].append(item)
 
-        # GHOST / SHADOW_AI_USAGE: Layer 2/3/4 activity with no code finding
+        # GHOST / SHADOW_AI_USAGE: Layer 2/3/4/5 activity with no code finding
         seen_providers = {item.network_provider for item in inventory["confirmed"] if item.network_provider}
         _known_apps = known_apps or frozenset()
         for provider, info in active_providers.items():
@@ -790,6 +837,30 @@ class CorrelationEngine:
                 k8s_namespace=l3.get("namespace"),
                 k8s_workload=l3.get("workload"),
                 detection_layers=["layer3"],
+            )
+            try:
+                _populate_saas_and_risk_flags(
+                    ghost_item, "", "", network_findings, layer4_findings
+                )
+            except Exception:
+                pass
+            inventory["ghost"].append(ghost_item)
+
+        # Layer 5 GHOST: CloudTrail Bedrock events with no matching Layer 1 code finding,
+        # and not already accounted for by Layer 2/3 (i.e. "bedrock" not in seen_providers).
+        # This handles serverless / managed Bedrock calls that have no local process.
+        if l5_bedrock and "bedrock" not in seen_providers:
+            seen_providers.add("bedrock")
+            _latest_l5 = max(l5_bedrock, key=lambda _nf: _nf.get("timestamp") or "")
+            _principal = (_latest_l5.get("username") or "").strip()
+            ghost_item = AgentInventoryItem(
+                agent_id=f"ghost:bedrock:cloudtrail:{_principal[:40]}",
+                classification="ghost",
+                risk_level="critical",
+                network_provider="bedrock",
+                last_seen=_latest_l5.get("timestamp"),
+                process_name=_principal or None,
+                detection_layers=["layer5"],
             )
             try:
                 _populate_saas_and_risk_flags(

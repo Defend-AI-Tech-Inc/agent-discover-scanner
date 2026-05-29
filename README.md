@@ -4,17 +4,21 @@
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
-[![PyPI](https://img.shields.io/pypi/v/agent-discover-scanner.svg)](https://pypi.org/project/agent-discover-scanner/)
+[![PyPI](https://img.shields.io/pypi/v/agentdiscover.svg)](https://pypi.org/project/agentdiscover/)
 [![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](CONTRIBUTING.md)
 
 *Part of the [DefendAI](https://defendai.ai) platform for autonomous AI governance*
+
+> **Formerly known as `agent-discover-scanner`** — the PyPI package has been renamed to `agentdiscover`.
+> `pip install agent-discover-scanner` continues to work and will install `agentdiscover` automatically.
+> The legacy entry points `agent-discover-scanner` and `agent-discover` remain as aliases.
 
 ---
 
 ## The finding that matters
 
 ```
-$ agent-discover-scanner scan-all ./your-repo --duration 10
+$ agentdiscover scan-all ./your-repo --duration 10
 
 🔍 Scanning for autonomous AI agents...
 
@@ -91,52 +95,87 @@ crewai-agent (CONFIRMED)
 
 ---
 
+## What counts as an "agent"
+
+DefendAI classifies **AI-capable components**, not just top-level orchestrators. Any component that invokes a model, holds a memory buffer, binds a tool, or queries a vector store is an independently governable unit — it can exfiltrate data, consume budget, or behave unexpectedly on its own.
+
+This matters because the gap between "we have one AI agent" (what the team believes) and the actual component count is routinely 5–15×.
+
+**Example — a single LangGraph application with 3 workers:**
+
+| # | Component | Why it's tracked |
+|---|---|---|
+| 1 | `StateGraph` | Graph entrypoint; controls execution flow |
+| 2–4 | Worker agent nodes ×3 | Each is an independent LangChain agent |
+| 5–7 | LLM bindings ×3 (one per worker) | Direct model invocations; each has its own token budget |
+| 8 | Supervisor node | Routes tasks between workers; has its own LLM call |
+| 9 | LLM binding for supervisor | Additional model invocation with separate prompt |
+| 10 | Tool node | Executes tool calls on behalf of workers |
+| 11 | Vector store retriever | RAG component; queries an external embedding store |
+| 12 | Memory checkpointer | Persists conversation state across turns |
+| 13 | Prompt templates | Carry system-level instructions that can be injected or drifted |
+| 14 | Output parser | Transforms model output; can silently drop or alter content |
+| 15 | Human-in-the-loop interrupt | Pause point that can be bypassed in non-interactive runs |
+
+One application. One developer who says "it's just an AI assistant." Fifteen components that each independently touch a model, a store, or a tool — any of which could be ungoverned, GHOST-classified, or carrying a stale permission scope.
+
+**Why component-level visibility matters:**
+
+- A worker's LLM binding can be swapped (model drift) without changing the agent node that wraps it.
+- A retriever can be pointed at a new vector store index without redeploying the application.
+- A prompt template lives in a config file, not code — static analysis misses it; only runtime observation catches the change.
+- GHOST detection fires at the component level: if worker 2's LLM binding starts calling a different endpoint, the graph-level agent still looks CONFIRMED while that specific binding is GHOST.
+
+agentdiscover reports each component as a separate inventory item so your governance controls can target the right granularity.
+
+---
+
 ## Quick start
 
 ```bash
 # macOS (recommended)
 brew install python@3.12 osquery pipx
-pipx install agent-discover-scanner
+pipx install agentdiscover
 pipx ensurepath && source ~/.zshrc   # add ~/.local/bin to PATH
 
 # Linux (Debian/Ubuntu)
 sudo apt-get install -y python3 osquery
-pip3 install agent-discover-scanner
+pip3 install agentdiscover
 
 # Linux (RHEL/Fedora)
 sudo dnf install -y python3 osquery
-pip3 install agent-discover-scanner
+pip3 install agentdiscover
 
 # Windows (PowerShell — elevated)
 winget install Python.Python.3.12
 winget install osquery.osquery
-pip install agent-discover-scanner
+pip install agentdiscover
 ```
 
 > **macOS:** never use `sudo` with the installer — Homebrew refuses root and osquery silently fails.
-> Use `pipx` to avoid Python environment conflicts. If `agent-discover-scanner` is not found after install, run `pipx ensurepath` and restart your terminal.
+> Use `pipx` to avoid Python environment conflicts. If `agentdiscover` is not found after install, run `pipx ensurepath` and restart your terminal.
 
 Then run your first scan:
 
 ```bash
-agent-discover-scanner scan-all ~/projects --duration 30
+agentdiscover scan-all ~/projects --duration 30
 ```
 
 To verify all layers are working before your first real scan:
 
 ```bash
-agent-discover-scanner --version
+agentdiscover --version
 osquery --version
-which agent-discover-scanner   # macOS: should show ~/.local/bin/agent-discover-scanner
+which agentdiscover   # macOS: should show ~/.local/bin/agentdiscover
 
 # Or use --dry-run to get a complete layer readiness report:
-agent-discover-scanner scan-all ~/projects --dry-run
+agentdiscover scan-all ~/projects --dry-run
 ```
 
 To upload results to the DefendAI platform:
 
 ```bash
-agent-discover-scanner scan-all ~/projects \
+agentdiscover scan-all ~/projects \
   --platform \
   --api-key YOUR_API_KEY
 ```
@@ -148,7 +187,7 @@ agent-discover-scanner scan-all ~/projects \
 Running `scan-all` on a real developer machine (macOS, ~30s observation window):
 
 ```
-$ agent-discover-scanner scan-all ~/projects --duration 30
+$ agentdiscover scan-all ~/projects --duration 30
 
 🔍 Scanning for autonomous AI agents...
 
@@ -199,7 +238,7 @@ All output files land in `./defendai-results/`:
 For an executive-ready audit bundle (AIBOM + markdown reports):
 
 ```bash
-agent-discover-scanner audit ~/projects --output ./audit-report
+agentdiscover audit ~/projects --output ./audit-report
 # Writes: audit-report/aibom.json, ghost-agents.md, mcp-report.md, summary.md
 ```
 
@@ -207,23 +246,23 @@ agent-discover-scanner audit ~/projects --output ./audit-report
 
 ## Common issues
 
-**`agent-discover-scanner: command not found` after pipx install**
+**`agentdiscover: command not found` after pipx install**
 
 ```bash
 pipx ensurepath
 source ~/.zshrc   # or ~/.bashrc on Linux
 ```
 
-If still missing: `which agent-discover-scanner` should show `~/.local/bin/agent-discover-scanner`. If `~/.local/bin` is not in `$PATH`, add it manually.
+If still missing: `which agentdiscover` should show `~/.local/bin/agentdiscover`. If `~/.local/bin` is not in `$PATH`, add it manually.
 
 **Layer 2 network monitoring fails on Linux**
 
 Layer 2 requires elevated privileges on Linux. Either run with `sudo` (avoid on macOS) or skip the layer:
 
 ```bash
-sudo agent-discover-scanner scan-all ~/projects --duration 30
+sudo agentdiscover scan-all ~/projects --duration 30
 # or skip Layer 2:
-agent-discover-scanner scan-all ~/projects --skip-layers 2
+agentdiscover scan-all ~/projects --skip-layers 2
 ```
 
 **osquery not installed — Layer 4 skipped**
@@ -242,7 +281,7 @@ sudo apt-get install osquery   # or see https://osquery.io/downloads
 If you see `⚠ Large scan path detected: N Python files`, point the scanner at a specific project directory rather than your entire home folder:
 
 ```bash
-agent-discover-scanner scan-all ~/projects/my-agent-project --duration 30
+agentdiscover scan-all ~/projects/my-agent-project --duration 30
 ```
 
 **Layer 3 Kubernetes not available**
@@ -250,13 +289,13 @@ agent-discover-scanner scan-all ~/projects/my-agent-project --duration 30
 If no cluster is reachable, Layer 3 logs a warning and continues. GHOST detection still works via Layer 2 network correlation. To skip Layer 3 explicitly:
 
 ```bash
-agent-discover-scanner scan-all ~/projects --skip-layers 3
+agentdiscover scan-all ~/projects --skip-layers 3
 ```
 
 **Check what layers are ready before scanning**
 
 ```bash
-agent-discover-scanner scan-all ~/projects --dry-run
+agentdiscover scan-all ~/projects --dry-run
 ```
 
 ---
@@ -334,22 +373,22 @@ For CloudTrail Lake (near-real-time, ~60s delay instead of 5-15 min):
 
 ```bash
 # Enable Cloud Audit detection (1-hour lookback, us-east-1)
-agent-discover-scanner scan-all ~/projects --cloud-audit
+agentdiscover scan-all ~/projects --cloud-audit
 
 # Specify region and longer lookback window
-agent-discover-scanner scan-all ~/projects \
+agentdiscover scan-all ~/projects \
   --cloud-audit \
   --cloud-audit-region eu-west-1 \
   --cloud-audit-hours 4
 
 # CloudTrail Lake — near-real-time (~60s delay)
-agent-discover-scanner scan-all ~/projects \
+agentdiscover scan-all ~/projects \
   --cloud-audit \
   --cloud-audit-lake-arn arn:aws:cloudtrail:us-east-1:123456789012:eventdatastore/YOUR-ARN \
   --cloud-audit-region us-east-1
 
 # Works with audit mode too
-agent-discover-scanner audit ~/projects \
+agentdiscover audit ~/projects \
   --cloud-audit \
   --cloud-audit-region us-east-1
 ```
@@ -461,7 +500,7 @@ Risk prioritization in reporting (guidance):
 Run continuously as a background service, updating the agent inventory every 30 seconds:
 
 ```bash
-agent-discover-scanner scan-all ~/projects \
+agentdiscover scan-all ~/projects \
   --daemon \
   --output ~/defendai-results \
   --platform \
@@ -488,12 +527,12 @@ The `--src-repo` flag adds a second codebase to every Layer 1 scan. Findings are
 
 ```bash
 # One-shot: include a remote team's repo in the scan
-agent-discover-scanner scan-all ~/projects \
+agentdiscover scan-all ~/projects \
   --src-repo https://github.com/acme/ml-services \
   --duration 30
 
 # Local path — no clone step
-agent-discover-scanner scan-all ~/projects \
+agentdiscover scan-all ~/projects \
   --src-repo ~/shared/ml-services
 ```
 
@@ -502,7 +541,7 @@ In one-shot mode the remote repo is shallow-cloned, scanned, and deleted before 
 In daemon mode, pass `--src-repo-ttl` to control how frequently the additional repo is re-fetched:
 
 ```bash
-agent-discover-scanner scan-all ~/projects \
+agentdiscover scan-all ~/projects \
   --daemon \
   --src-repo https://github.com/acme/ml-services \
   --src-repo-ttl 7200    # re-clone at most once every 2 hours
@@ -537,7 +576,7 @@ When connected to the DefendAI platform (`--platform` flag), the tenant-managed 
 The scanner is the **discovery layer**. The platform is where discovered agents become governed agents.
 
 ```bash
-agent-discover-scanner scan-all ~/projects \
+agentdiscover scan-all ~/projects \
   --platform \
   --api-key YOUR_KEY \
   --duration 30
@@ -620,8 +659,8 @@ Findings appear in **Security → Code scanning alerts** as soon as the workflow
 ```yaml
 - name: Scan for AI agents
   run: |
-    pip install agent-discover-scanner
-    agent-discover-scanner scan . --format sarif --output results.sarif
+    pip install agentdiscover
+    agentdiscover scan . --format sarif --output results.sarif
 
 - name: Upload SARIF to GitHub Security tab
   uses: github/codeql-action/upload-sarif@v3
@@ -634,7 +673,7 @@ For a full-stack scan (all layers, structured output):
 ```yaml
 - name: Full agent scan
   run: |
-    agent-discover-scanner scan-all . \
+    agentdiscover scan-all . \
       --duration 30 \
       --output ./defendai-results \
       --skip-layers 3    # no K8s cluster in CI
@@ -646,7 +685,7 @@ For a full-stack scan (all layers, structured output):
 
 ```bash
 # Full scan (recommended) — all 4 layers + correlation
-agent-discover-scanner scan-all PATH [OPTIONS]
+agentdiscover scan-all PATH [OPTIONS]
   --duration/-d SECONDS      Network and K8s monitor observation window [default: 60]
   --output/-o PATH           Output directory for scan results [default: defendai-results]
   --format/-f TEXT           Output format: text|json [default: text]
@@ -667,22 +706,23 @@ agent-discover-scanner scan-all PATH [OPTIONS]
   --dry-run                  Check layer availability without running a scan
 
 # Individual layers
-agent-discover-scanner scan PATH              # Layer 1: source code only
-agent-discover-scanner deps PATH              # Dependency scanning
-agent-discover-scanner monitor                # Layer 2: network monitor only
-agent-discover-scanner monitor-k8s            # Layer 3: Kubernetes runtime only
-agent-discover-scanner endpoint               # Layer 4: endpoint scan only
-agent-discover-scanner correlate              # Correlate existing scan outputs
+agentdiscover scan PATH              # Layer 1: source code only
+agentdiscover deps PATH              # Dependency scanning
+agentdiscover monitor                # Layer 2: network monitor only
+agentdiscover monitor-k8s            # Layer 3: Kubernetes runtime only
+agentdiscover endpoint               # Layer 4: endpoint scan only
+agentdiscover correlate              # Correlate existing scan outputs
 
 # Audit mode (v2.5.0+) — full report: aibom.json, ghost-agents.md, mcp-report.md
-agent-discover-scanner audit PATH [OPTIONS]
+agentdiscover audit PATH [OPTIONS]
   --duration/-d SECONDS      Observation window [default: 60]
   --output/-o PATH           Report output directory [default: defendai-audit]
   --layer3-file PATH         Use existing Tetragon JSONL (skip live Layer 3)
   --platform                 Upload to DefendAI platform
   --api-key TEXT             DefendAI platform API key
 
-# Short alias (v2.5.0+) — same as agent-discover-scanner
+# Legacy aliases — all three still work
+agent-discover-scanner [COMMAND] [OPTIONS]
 agent-discover [COMMAND] [OPTIONS]
 ```
 
@@ -706,7 +746,7 @@ agent-discover [COMMAND] [OPTIONS]
 git clone https://github.com/Defend-AI-Tech-Inc/agent-discover-scanner
 cd agent-discover-scanner/demo
 ./setup.sh    # deploys LangChain, CrewAI, and a shadow agent to local Kubernetes
-agent-discover-scanner scan-all ./sample-repo --duration 60
+agentdiscover scan-all ./sample-repo --duration 60
 ```
 
 Expected output: 2 CONFIRMED agents (crewai-agent, langchain-agent), 1 GHOST agent (shadow-agent — runtime activity, no source code).

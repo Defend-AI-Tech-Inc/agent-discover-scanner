@@ -3,8 +3,8 @@ revision = 3
 requires-python = ">=3.10"
 
 [[package]]
-name = "agent-discover-scanner"
-version = "2.7.1"
+name = "agentdiscover"
+version = "2.7.2"
 source = { editable = "." }
 dependencies = [
     { name = "certifi" },

@@ -36,7 +36,7 @@ from agent_discover_scanner.reports.layer4_report import Layer4Report
 from agent_discover_scanner.monitors.k8s_monitor import K8sAPIMonitor
 import socket
 
-__version__ = _pkg_version("agent-discover-scanner")
+__version__ = _pkg_version("agentdiscover")
 logger = logging.getLogger(__name__)
 
 app = typer.Typer(help="AgentDiscover Scanner: Detect Autonomous AI Agents and Shadow AI")
@@ -1040,19 +1040,19 @@ def monitor_k8s(
     
     Examples:
         # Monitor with console output
-        agent-discover-scanner monitor-k8s
-        
+        agentdiscover monitor-k8s
+
         # Production: read from local Tetragon export file (no kubectl/API load)
-        agent-discover-scanner monitor-k8s --tetragon-export-file /var/run/cilium/tetragon/tetragon.log
-        
+        agentdiscover monitor-k8s --tetragon-export-file /var/run/cilium/tetragon/tetragon.log
+
         # Save detections to JSONL file
-        agent-discover-scanner monitor-k8s --output detections.jsonl --format jsonl
-        
+        agentdiscover monitor-k8s --output detections.jsonl --format jsonl
+
         # Monitor for 60 seconds and save as JSON
-        agent-discover-scanner monitor-k8s --duration 60 --output report.json --format json
-        
+        agentdiscover monitor-k8s --duration 60 --output report.json --format json
+
         # Monitor Tetragon in custom namespace
-        agent-discover-scanner monitor-k8s --namespace monitoring
+        agentdiscover monitor-k8s --namespace monitoring
     """
     from pathlib import Path
     from agent_discover_scanner.monitors import monitor_k8s as run_monitor

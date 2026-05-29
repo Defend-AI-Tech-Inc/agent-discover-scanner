@@ -55,7 +55,7 @@ def generate_aibom(inventory_json: Path, output_path: Path) -> dict[str, Any]:
             components.append(comp)
 
     try:
-        scanner_version = _pkg_version("agent-discover-scanner")
+        scanner_version = _pkg_version("agentdiscover")
     except Exception:
         scanner_version = "unknown"
 

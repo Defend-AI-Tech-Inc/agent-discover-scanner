@@ -357,7 +357,7 @@ def upload_scan_results(
         "os": f"{_platform.system()} {_platform.release()}",
         "os_version": _platform.version(),
         "ip": socket.gethostbyname(socket.gethostname()),
-        "scanner_version": _metadata.version("agent-discover-scanner"),
+        "scanner_version": _metadata.version("agentdiscover"),
     }
 
     # wawsdb: ScannerAgent (proxy_router.py) should include high_risk_agent: dict = {}

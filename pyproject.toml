@@ -3,9 +3,9 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project]
-name = "agent-discover-scanner"
-version = "2.7.1"
-description = "Discover and inventory autonomous AI agents across your infrastructure - static analysis, runtime detection, and Kubernetes monitoring"
+name = "agentdiscover"
+version = "2.7.3"
+description = "Discover every AI agent in your infrastructure. 5-layer detection: static analysis, network monitoring, eBPF/Kubernetes runtime, endpoint, and cloud audit (CloudTrail). Company-level correlation. AIBOM export. MCP server detection."
 readme = "README.md"
 requires-python = ">=3.10"
 license = {text = "MIT"}
@@ -23,7 +23,7 @@ keywords = [
     "shadow-ai-detection", "ai-inventory",
 ]
 classifiers = [
-    "Development Status :: 4 - Beta",
+    "Development Status :: 5 - Production/Stable",
     "Intended Audience :: Developers",
     "Intended Audience :: Information Technology",
     "Intended Audience :: System Administrators",
@@ -62,6 +62,8 @@ dev = [
 ]
 
 [project.scripts]
+agentdiscover = "agent_discover_scanner.cli:app"
+# Backward-compatible aliases kept so existing installs and CI scripts continue to work.
 agent-discover-scanner = "agent_discover_scanner.cli:app"
 agent-discover = "agent_discover_scanner.cli:app"
 
@@ -86,3 +88,6 @@ python_files = ["test_*.py"]
 python_classes = ["Test*"]
 python_functions = ["test_*"]
 addopts = "-v --cov=agent_discover_scanner --cov-report=term-missing"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/agent_discover_scanner"]

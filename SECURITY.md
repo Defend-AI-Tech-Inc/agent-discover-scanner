@@ -48,7 +48,7 @@ If we cannot patch within 90 days, we will notify the reporter, explain the dela
 
 The following are **in scope** for security reports:
 
-- `agent-discover-scanner` Python package (PyPI: `agent-discover-scanner`)
+- `agentdiscover` Python package (PyPI: `agentdiscover`; formerly `agent-discover-scanner`)
 - The `scan-all`, `audit`, `scan`, `monitor`, `monitor-k8s`, `endpoint`, and `correlate` CLI commands
 - Detection layers 1–5 and their output files
 - Platform upload (`--platform`) credential handling

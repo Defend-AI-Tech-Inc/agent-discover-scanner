@@ -13,7 +13,7 @@ from agent_discover_scanner.visitor import Finding
 class SARIFGenerator:
     """Generate SARIF 2.1.0 compliant output."""
 
-    TOOL_NAME = "AgentDiscover Scanner"
+    TOOL_NAME = "AgentDiscover"
     TOOL_VERSION = "1.0.0"
     TOOL_URI = "https://defendai.ai/agentdiscover"
 

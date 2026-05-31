@@ -99,6 +99,20 @@ def _src_repo_id(src_repo: str) -> str:
     return hashlib.sha256(f"{socket.gethostname()}:{path}".encode()).hexdigest()[:12]
 
 
+def _get_git_remote(scan_root: Path) -> Optional[str]:
+    """Return the git remote origin URL for scan_root, or None if not in a git repo."""
+    try:
+        r = subprocess.run(
+            ["git", "-C", str(scan_root), "remote", "get-url", "origin"],
+            capture_output=True, text=True, timeout=5,
+        )
+        if r.returncode == 0:
+            return r.stdout.strip() or None
+    except Exception:
+        pass
+    return None
+
+
 def _merge_sarif_results(primary: Path, additional: Path) -> None:
     """Append SARIF results from additional into primary, writing primary in place."""
     try:
@@ -316,6 +330,14 @@ def execute_scan_all(
     cloud_audit_lake_arn: Optional[str] = None,
     azure_monitor_enabled: bool = False,
     gcp_audit_enabled: bool = False,
+    # Layer 5 — SSE Proxy (v2.8.0+)
+    zscaler_enabled: bool = False,
+    zscaler_tenant: Optional[str] = None,
+    zscaler_api_key: Optional[str] = None,
+    prisma_access_enabled: bool = False,
+    prisma_tenant_id: Optional[str] = None,
+    prisma_client_id: Optional[str] = None,
+    prisma_region: Optional[str] = None,
     # Backward-compat aliases (deprecated; map to cloud_audit_* above)
     cloudtrail_enabled: bool = False,
     cloudtrail_region: Optional[str] = None,
@@ -381,6 +403,7 @@ def execute_scan_all(
     layer3_jsonl = output_dir / "layer3_k8s.jsonl"
     layer4_json = output_dir / "layer4_endpoint.json"
     layer5_json = output_dir / "layer5_cloud_audit.json"
+    layer5_sse_proxy_json = output_dir / "layer5_sse_proxy.json"
     inventory_path = output_dir / "agent_inventory.json"
 
     effective_layer: Optional[str] = None
@@ -525,6 +548,7 @@ def execute_scan_all(
     layer3_findings: list = []
     layer4_findings: list = []
     cloud_audit_findings: list = []
+    sse_proxy_findings: list = []
     findings_lock = threading.Lock()
 
     stop_event = threading.Event()
@@ -778,6 +802,49 @@ def execute_scan_all(
         except Exception as exc:
             logger.warning("Layer 5 (Cloud Audit) error: %s", exc)
 
+    def run_sse_proxy_once() -> None:
+        """Layer 5 — SSE Proxy: query Zscaler ZIA / Prisma Access for LLM web traffic."""
+        nonlocal sse_proxy_findings
+        _run_sse = zscaler_enabled or prisma_access_enabled
+        if not _run_sse:
+            return
+        try:
+            from agent_discover_scanner.detectors.sse_proxy import run_sse_proxy_detection
+
+            _sources = []
+            if zscaler_enabled:
+                _sources.append("Zscaler ZIA")
+            if prisma_access_enabled:
+                _sources.append("Prisma Access")
+            console.print(
+                f"[bold green]🔒 Querying SSE proxy logs "
+                f"({', '.join(_sources)}, Layer 5)...[/bold green]"
+            )
+            _effective_hours = cloud_audit_hours if cloud_audit_hours > 0 else 1
+            sp_findings = run_sse_proxy_detection(
+                hours_back=_effective_hours,
+                zscaler_enabled=zscaler_enabled,
+                zscaler_tenant=zscaler_tenant,
+                zscaler_api_key=zscaler_api_key,
+                prisma_access_enabled=prisma_access_enabled,
+                prisma_tenant_id=prisma_tenant_id,
+                prisma_client_id=prisma_client_id,
+                prisma_region=prisma_region,
+                _warn_fn=lambda msg: console.print(f"[yellow]⚠  {msg}[/yellow]"),
+            )
+            if sp_findings:
+                console.print(
+                    f"  [cyan]✓[/cyan] Layer 5 (SSE Proxy): "
+                    f"{len(sp_findings)} event(s) detected"
+                )
+            _rotate_file_if_needed(layer5_sse_proxy_json, max_log_size_bytes, max_log_backups)
+            layer5_sse_proxy_json.write_text(json.dumps({"findings": sp_findings}, indent=2))
+            if not daemon:
+                with findings_lock:
+                    sse_proxy_findings = sp_findings
+        except Exception as exc:
+            logger.warning("Layer 5 (SSE Proxy) error: %s", exc)
+
     def run_src_repo_once() -> str:
         """Clone (remote) or reuse (local) src_repo, run Layer 1, merge SARIF. Returns outcome."""
         if not src_repo or is_skipped(1):
@@ -899,6 +966,30 @@ def execute_scan_all(
                             existing_keys.add(key)
         except Exception:
             pass
+        # Merge Layer 5 (SSE Proxy) findings into the network findings list.
+        try:
+            if daemon:
+                if layer5_sse_proxy_json.exists():
+                    sp_data = json.loads(layer5_sse_proxy_json.read_text())
+                    nf = nf + (sp_data.get("findings") or [])
+            else:
+                with findings_lock:
+                    sp = list(sse_proxy_findings)
+                if not sp and layer5_sse_proxy_json.exists():
+                    try:
+                        sp_data = json.loads(layer5_sse_proxy_json.read_text())
+                        sp = sp_data.get("findings") or []
+                    except Exception:
+                        sp = []
+                if sp:
+                    existing_sp_keys = {(f.get("provider"), f.get("timestamp"), f.get("username")) for f in nf}
+                    for f in sp:
+                        key = (f.get("provider"), f.get("timestamp"), f.get("username"))
+                        if key not in existing_sp_keys:
+                            nf.append(f)
+                            existing_sp_keys.add(key)
+        except Exception:
+            pass
         console.print("[bold cyan]🔗 Correlating findings...[/bold cyan]\n")
         inventory = CorrelationEngine.correlate(
             code_findings=cf,
@@ -950,7 +1041,7 @@ def execute_scan_all(
     # Non-daemon: run once with layers in parallel
     hra_result: dict = {}
     if not daemon:
-        with ThreadPoolExecutor(max_workers=5) as executor:
+        with ThreadPoolExecutor(max_workers=6) as executor:
             futures = []
             # Fast tasks: Layer 1 + 4
             futures.append(executor.submit(run_layer1_once))
@@ -960,6 +1051,8 @@ def execute_scan_all(
             futures.append(executor.submit(run_layer3_once))
             # Layer 5 — Cloud Audit (runs independently of Layers 1-4)
             futures.append(executor.submit(run_layer5_once))
+            # Layer 5 — SSE Proxy (Zscaler ZIA / Prisma Access)
+            futures.append(executor.submit(run_sse_proxy_once))
             wait(futures)
 
         if src_repo and not is_skipped(1):
@@ -1040,6 +1133,7 @@ def execute_scan_all(
         report["scan_path"] = str(scan_root)
         if platform:
             try:
+                # Layer 2 network findings
                 network_for_upload = network_findings or []
                 try:
                     if layer2_json.exists():
@@ -1049,6 +1143,52 @@ def execute_scan_all(
                         )
                 except Exception:
                     pass
+                # Append SSE proxy findings so the platform can correlate proxy-sourced
+                # LLM calls with the agent inventory (previously layer2_network.json only).
+                try:
+                    _sp_raw = list(sse_proxy_findings)
+                    if not _sp_raw and layer5_sse_proxy_json.exists():
+                        _sp_data = json.loads(layer5_sse_proxy_json.read_text())
+                        _sp_raw = _sp_data.get("findings") or []
+                    if _sp_raw:
+                        network_for_upload = network_for_upload + _sp_raw
+                except Exception:
+                    pass
+                # Raw Layer 5 findings arrays (forwarded as-is for server-side analysis)
+                _raw_cloud_audit: list = list(cloud_audit_findings)
+                if not _raw_cloud_audit and layer5_json.exists():
+                    try:
+                        _raw_cloud_audit = json.loads(layer5_json.read_text()).get("findings") or []
+                    except Exception:
+                        _raw_cloud_audit = []
+                _raw_sse_proxy: list = list(sse_proxy_findings)
+                if not _raw_sse_proxy and layer5_sse_proxy_json.exists():
+                    try:
+                        _raw_sse_proxy = (
+                            json.loads(layer5_sse_proxy_json.read_text()).get("findings") or []
+                        )
+                    except Exception:
+                        _raw_sse_proxy = []
+                # Build scan_meta: context the server cannot derive from agent records alone.
+                # layers_active / layers_skipped are integer arrays (server schema).
+                _all_layers_int = {1, 2, 3, 4, 5}
+                _skip_ints = {int(s) for s in skip_set if s.isdigit()}
+                _scan_meta = {
+                    "scan_duration_seconds": duration,
+                    "generated_at": report.get("generated_at"),
+                    "scan_path": str(scan_root),
+                    "layers_active": sorted(_all_layers_int - _skip_ints),
+                    "layers_skipped": sorted(_skip_ints),
+                    "detection_coverage": (
+                        report.get("summary", {}).get("detection_coverage", {})
+                    ),
+                    "git_remote": _get_git_remote(scan_root),
+                }
+                # Serialise interceptor objects to plain dicts
+                _interceptors_payload = [
+                    {"vendor": _r.vendor, "fallback_strategy": _r.fallback_strategy}
+                    for _r in interceptors
+                ]
                 upload_scan_results(
                     report,
                     hostname=socket.gethostname(),
@@ -1060,6 +1200,10 @@ def execute_scan_all(
                     high_risk_agent=hra_result,
                     mcp_result=mcp_result,
                     scan_dir=str(scan_root),
+                    scan_meta=_scan_meta,
+                    network_interceptors=_interceptors_payload,
+                    cloud_audit_findings=_raw_cloud_audit,
+                    sse_proxy_findings=_raw_sse_proxy,
                 )
             except Exception:
                 logger.warning("DefendAI platform upload failed unexpectedly", exc_info=True)
@@ -1308,6 +1452,49 @@ def execute_scan_all(
                                         )
                                     except Exception:
                                         mcp_upload = {}
+                                    # Include SSE proxy findings in network_for_upload
+                                    try:
+                                        if layer5_sse_proxy_json.exists():
+                                            _sp_d = json.loads(layer5_sse_proxy_json.read_text())
+                                            _sp_daemon = _sp_d.get("findings") or []
+                                            if _sp_daemon:
+                                                network_for_upload = network_for_upload + _sp_daemon
+                                    except Exception:
+                                        pass
+                                    # Raw Layer 5 arrays for platform
+                                    _raw_ca_d: list = []
+                                    _raw_sp_d: list = []
+                                    try:
+                                        if layer5_json.exists():
+                                            _l5t = json.loads(layer5_json.read_text())
+                                            _raw_ca_d = _l5t.get("findings") or []
+                                    except Exception:
+                                        pass
+                                    try:
+                                        if layer5_sse_proxy_json.exists():
+                                            _raw_sp_d = (
+                                                json.loads(layer5_sse_proxy_json.read_text())
+                                                .get("findings") or []
+                                            )
+                                    except Exception:
+                                        pass
+                                    _d_skip_ints = {
+                                        int(s) for s in skip_set if s.isdigit()
+                                    }
+                                    _daemon_meta = {
+                                        "scan_duration_seconds": duration,
+                                        "generated_at": report_local.get("generated_at"),
+                                        "scan_path": str(scan_root),
+                                        "layers_active": sorted(
+                                            {1, 2, 3, 4, 5} - _d_skip_ints
+                                        ),
+                                        "layers_skipped": sorted(_d_skip_ints),
+                                        "detection_coverage": (
+                                            report_local.get("summary", {})
+                                            .get("detection_coverage", {})
+                                        ),
+                                        "git_remote": _get_git_remote(scan_root),
+                                    }
                                     upload_scan_results(
                                         report_local,
                                         hostname=socket.gethostname(),
@@ -1319,6 +1506,16 @@ def execute_scan_all(
                                         high_risk_agent=hra_upload,
                                         mcp_result=mcp_upload,
                                         scan_dir=str(scan_root),
+                                        scan_meta=_daemon_meta,
+                                        network_interceptors=[
+                                            {
+                                                "vendor": _r.vendor,
+                                                "fallback_strategy": _r.fallback_strategy,
+                                            }
+                                            for _r in interceptors
+                                        ],
+                                        cloud_audit_findings=_raw_ca_d,
+                                        sse_proxy_findings=_raw_sp_d,
                                     )
                                     last_uploaded_hash = current_hash
                                     logger.info(
@@ -1387,6 +1584,20 @@ def execute_scan_all(
         report = run_correlation_once()
         if platform:
             try:
+                _sd_ca: list = []
+                _sd_sp: list = []
+                try:
+                    if layer5_json.exists():
+                        _sd_ca = json.loads(layer5_json.read_text()).get("findings") or []
+                except Exception:
+                    pass
+                try:
+                    if layer5_sse_proxy_json.exists():
+                        _sd_sp = (
+                            json.loads(layer5_sse_proxy_json.read_text()).get("findings") or []
+                        )
+                except Exception:
+                    pass
                 upload_scan_results(
                     report,
                     hostname=socket.gethostname(),
@@ -1396,6 +1607,27 @@ def execute_scan_all(
                     high_risk_agent=None,
                     mcp_result=None,
                     scan_dir=str(scan_root),
+                    scan_meta={
+                        "scan_duration_seconds": duration,
+                        "generated_at": report.get("generated_at"),
+                        "scan_path": str(scan_root),
+                        "layers_active": sorted(
+                            {1, 2, 3, 4, 5} - {int(s) for s in skip_set if s.isdigit()}
+                        ),
+                        "layers_skipped": sorted(
+                            int(s) for s in skip_set if s.isdigit()
+                        ),
+                        "detection_coverage": (
+                            report.get("summary", {}).get("detection_coverage", {})
+                        ),
+                        "git_remote": _get_git_remote(scan_root),
+                    },
+                    network_interceptors=[
+                        {"vendor": _r.vendor, "fallback_strategy": _r.fallback_strategy}
+                        for _r in interceptors
+                    ],
+                    cloud_audit_findings=_sd_ca,
+                    sse_proxy_findings=_sd_sp,
                 )
             except Exception:
                 logger.warning("DefendAI platform upload failed unexpectedly", exc_info=True)

@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "agentdiscover"
-version = "2.7.3"
+version = "2.8.1"
 description = "Discover every AI agent in your infrastructure. 5-layer detection: static analysis, network monitoring, eBPF/Kubernetes runtime, endpoint, and cloud audit (CloudTrail). Company-level correlation. AIBOM export. MCP server detection."
 readme = "README.md"
 requires-python = ">=3.10"

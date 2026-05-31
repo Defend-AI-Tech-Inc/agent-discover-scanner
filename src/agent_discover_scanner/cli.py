@@ -39,7 +39,7 @@ import socket
 __version__ = _pkg_version("agentdiscover")
 logger = logging.getLogger(__name__)
 
-app = typer.Typer(help="AgentDiscover Scanner: Detect Autonomous AI Agents and Shadow AI")
+app = typer.Typer(help="AgentDiscover: Detect Autonomous AI Agents and Shadow AI")
 console = Console()
 
 
@@ -49,7 +49,7 @@ def version_callback(value: Optional[bool]) -> None:
     """
     if not value:
         return
-    console.print(f"AgentDiscover Scanner v{__version__}")
+    console.print(f"AgentDiscover v{__version__}")
     raise typer.Exit()
 
 
@@ -664,6 +664,49 @@ def scan_all(
         "--gcp-audit/--no-gcp-audit",
         help="[Preview] Enable GCP Cloud Audit Log detection for Vertex AI invocations (coming soon).",
     ),
+    zscaler: bool = typer.Option(
+        False,
+        "--zscaler/--no-zscaler",
+        help=(
+            "Enable Zscaler ZIA web-proxy log detection for LLM API calls (Layer 5). "
+            "Requires ZSCALER_API_KEY, ZSCALER_USERNAME, ZSCALER_PASSWORD, and ZSCALER_TENANT "
+            "env vars (or --zscaler-tenant / --zscaler-api-key overrides)."
+        ),
+    ),
+    zscaler_tenant: Optional[str] = typer.Option(
+        None,
+        "--zscaler-tenant",
+        help="Zscaler tenant prefix (overrides ZSCALER_TENANT env var).",
+    ),
+    zscaler_api_key: Optional[str] = typer.Option(
+        None,
+        "--zscaler-api-key",
+        help="Zscaler API key (overrides ZSCALER_API_KEY env var).",
+    ),
+    prisma_access: bool = typer.Option(
+        False,
+        "--prisma-access/--no-prisma-access",
+        help=(
+            "Enable Prisma Access / Cortex Data Lake detection for LLM API calls (Layer 5). "
+            "Requires PRISMA_CLIENT_ID, PRISMA_CLIENT_SECRET, and PRISMA_TENANT_ID env vars "
+            "(or --prisma-tenant-id / --prisma-client-id overrides)."
+        ),
+    ),
+    prisma_tenant_id: Optional[str] = typer.Option(
+        None,
+        "--prisma-tenant-id",
+        help="Prisma Access tenant / TSG ID (overrides PRISMA_TENANT_ID env var).",
+    ),
+    prisma_client_id: Optional[str] = typer.Option(
+        None,
+        "--prisma-client-id",
+        help="Prisma Access OAuth2 client ID (overrides PRISMA_CLIENT_ID env var).",
+    ),
+    prisma_region: Optional[str] = typer.Option(
+        None,
+        "--prisma-region",
+        help="Cortex Data Lake region: us/eu/uk/sg/ca/jp/au (overrides PRISMA_REGION env var).",
+    ),
 ):
     """
     Run a full 4-layer AI agent scan, correlate all findings,
@@ -708,6 +751,13 @@ def scan_all(
         cloud_audit_lake_arn=cloud_audit_lake_arn,
         azure_monitor_enabled=azure_monitor,
         gcp_audit_enabled=gcp_audit,
+        zscaler_enabled=zscaler,
+        zscaler_tenant=zscaler_tenant,
+        zscaler_api_key=zscaler_api_key,
+        prisma_access_enabled=prisma_access,
+        prisma_tenant_id=prisma_tenant_id,
+        prisma_client_id=prisma_client_id,
+        prisma_region=prisma_region,
     )
 
     if emit_mcpfw_policy and report and not daemon:
@@ -916,6 +966,49 @@ def audit(
         "--gcp-audit/--no-gcp-audit",
         help="[Preview] Enable GCP Cloud Audit Log detection for Vertex AI invocations (coming soon).",
     ),
+    zscaler: bool = typer.Option(
+        False,
+        "--zscaler/--no-zscaler",
+        help=(
+            "Enable Zscaler ZIA web-proxy log detection for LLM API calls (Layer 5). "
+            "Requires ZSCALER_API_KEY, ZSCALER_USERNAME, ZSCALER_PASSWORD, and ZSCALER_TENANT "
+            "env vars (or --zscaler-tenant / --zscaler-api-key overrides)."
+        ),
+    ),
+    zscaler_tenant: Optional[str] = typer.Option(
+        None,
+        "--zscaler-tenant",
+        help="Zscaler tenant prefix (overrides ZSCALER_TENANT env var).",
+    ),
+    zscaler_api_key: Optional[str] = typer.Option(
+        None,
+        "--zscaler-api-key",
+        help="Zscaler API key (overrides ZSCALER_API_KEY env var).",
+    ),
+    prisma_access: bool = typer.Option(
+        False,
+        "--prisma-access/--no-prisma-access",
+        help=(
+            "Enable Prisma Access / Cortex Data Lake detection for LLM API calls (Layer 5). "
+            "Requires PRISMA_CLIENT_ID, PRISMA_CLIENT_SECRET, and PRISMA_TENANT_ID env vars "
+            "(or --prisma-tenant-id / --prisma-client-id overrides)."
+        ),
+    ),
+    prisma_tenant_id: Optional[str] = typer.Option(
+        None,
+        "--prisma-tenant-id",
+        help="Prisma Access tenant / TSG ID (overrides PRISMA_TENANT_ID env var).",
+    ),
+    prisma_client_id: Optional[str] = typer.Option(
+        None,
+        "--prisma-client-id",
+        help="Prisma Access OAuth2 client ID (overrides PRISMA_CLIENT_ID env var).",
+    ),
+    prisma_region: Optional[str] = typer.Option(
+        None,
+        "--prisma-region",
+        help="Cortex Data Lake region: us/eu/uk/sg/ca/jp/au (overrides PRISMA_REGION env var).",
+    ),
 ):
     """
     Run the full scan-all pipeline into output/raw/, then write AIBOM JSON and Markdown reports
@@ -956,6 +1049,13 @@ def audit(
         cloud_audit_lake_arn=cloud_audit_lake_arn,
         azure_monitor_enabled=azure_monitor,
         gcp_audit_enabled=gcp_audit,
+        zscaler_enabled=zscaler,
+        zscaler_tenant=zscaler_tenant,
+        zscaler_api_key=zscaler_api_key,
+        prisma_access_enabled=prisma_access,
+        prisma_tenant_id=prisma_tenant_id,
+        prisma_client_id=prisma_client_id,
+        prisma_region=prisma_region,
     )
     if report is None:
         console.print("[red]Audit did not produce a correlation report.[/red]")

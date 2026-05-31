@@ -102,6 +102,12 @@ class AgentInventoryItem:
     # Metadata
     discovered_at: Optional[str] = None
 
+    # Layer 5 enrichment (populated from CloudTrail / SSE Proxy findings)
+    model_id: Optional[str] = None          # Bedrock model ID or similar from cloud audit
+    l5_framework: Optional[str] = None      # Runtime framework inferred from audit log UserAgent
+    caller_identity: Optional[str] = None   # IAM ARN / email from cloud audit (not OS process)
+    l5_event_count: int = 0                 # Number of raw L5 events that contributed
+
     # SaaS and risk (populated during correlation)
     saas_connections: Dict[str, Any] = field(default_factory=dict)
     risk_flags: List[str] = field(default_factory=list)
@@ -585,13 +591,15 @@ class CorrelationEngine:
         layer4_findings = layer4_findings or []
         layer3_findings = layer3_findings or []
 
-        # Split network_findings into Layer 2 (live network) and Layer 5 (cloud audit).
-        # Building active_providers from l2_network only prevents Layer 5 CloudTrail
-        # findings (process_name=None) from overwriting Layer 2 process information,
-        # which would misclassify a Chrome→Bedrock Shadow AI finding as a GHOST (Bug 3).
+        # Split network_findings into Layer 2 (live network), Layer 5 Cloud Audit,
+        # and Layer 5 SSE Proxy. Building active_providers from l2_network only prevents
+        # Layer 5 findings (process_name=None) from overwriting Layer 2 process
+        # information, which would misclassify a Chrome→Bedrock Shadow AI finding as a
+        # GHOST (Bug 3).
+        _L5_LAYERS = {"layer5_cloud_audit", "layer5_sse_proxy"}
         l2_network = [
             nf for nf in network_findings
-            if nf.get("detection_layer") != "layer5_cloud_audit"
+            if nf.get("detection_layer") not in _L5_LAYERS
         ]
         l5_cloud_audit = [
             nf for nf in network_findings
@@ -600,6 +608,10 @@ class CorrelationEngine:
         l5_bedrock = [
             nf for nf in l5_cloud_audit
             if (nf.get("provider") or "").lower() == "bedrock"
+        ]
+        l5_sse_proxy = [
+            nf for nf in network_findings
+            if nf.get("detection_layer") == "layer5_sse_proxy"
         ]
 
         # Layer 2: active providers from l2_network (live network only — never Layer 5).
@@ -651,6 +663,12 @@ class CorrelationEngine:
 
             possible = cls._code_finding_providers(cf)
 
+            # Layer 5 enrichment locals — filled by supplemental blocks below.
+            model_id = None
+            l5_framework = None
+            caller_identity = None
+            l5_event_count = 0
+
             # Layer 2: strict matching — process_name must be a known AI executor (no fuzzy match)
             if l2_network:
                 for p in possible:
@@ -698,6 +716,19 @@ class CorrelationEngine:
                     detection_layers.append("layer5")
                     match_provider = match_provider or "bedrock"
 
+            # Layer 5 (SSE Proxy): Zscaler / Prisma Access — match by provider.
+            # SSE proxy records have destination_host set; the provider has already been
+            # resolved from that hostname by the detector. No process-name check needed.
+            if l5_sse_proxy and "layer5_sse" not in detection_layers:
+                for p in possible:
+                    for _sp in l5_sse_proxy:
+                        if (_sp.get("provider") or "").lower() == p:
+                            detection_layers.append("layer5_sse")
+                            match_provider = match_provider or p
+                            break
+                    if "layer5_sse" in detection_layers:
+                        break
+
             confirmed = len(detection_layers) > 1
             if confirmed:
                 if "layer3" in detection_layers:
@@ -742,16 +773,38 @@ class CorrelationEngine:
                     if process_name is None:
                         process_name = endpoint_process
 
-            # Layer 5 supplemental fill: use CloudTrail timestamp / IAM principal
-            # when Layer 2 did not supply them (process_name stays None if already set).
+            # Layer 5 supplemental fill: use CloudTrail timestamp / IAM principal.
+            # process_name is intentionally NOT set here — it is reserved for OS-level
+            # process names from L2/L4 only.  caller_identity captures the IAM principal.
             if "layer5" in detection_layers and l5_bedrock:
                 _latest_l5 = max(l5_bedrock, key=lambda _nf: _nf.get("timestamp") or "")
                 if last_seen is None:
                     last_seen = _latest_l5.get("timestamp")
                 if network_provider is None:
                     network_provider = "bedrock"
-                if process_name is None:
-                    process_name = _latest_l5.get("username") or None
+                model_id = _latest_l5.get("model_id") or None
+                l5_framework = _latest_l5.get("framework") or None
+                caller_identity = _latest_l5.get("username") or None
+                l5_event_count = len(l5_bedrock)
+
+            # Layer 5 SSE Proxy supplemental fill: use proxy timestamp / username.
+            # process_name is intentionally NOT set here — it is reserved for OS-level
+            # process names from L2/L4 only.  caller_identity captures the proxy user.
+            if "layer5_sse" in detection_layers and l5_sse_proxy:
+                # Pick the most recent SSE proxy finding for the matched provider
+                _matched_sp = [
+                    _sp for _sp in l5_sse_proxy
+                    if (_sp.get("provider") or "").lower() == (match_provider or "")
+                ] or l5_sse_proxy
+                _latest_sp = max(_matched_sp, key=lambda _nf: _nf.get("timestamp") or "")
+                if last_seen is None:
+                    last_seen = _latest_sp.get("timestamp")
+                if network_provider is None:
+                    network_provider = _latest_sp.get("provider")
+                if caller_identity is None:
+                    caller_identity = _latest_sp.get("username") or None
+                if l5_event_count == 0:
+                    l5_event_count = len(_matched_sp)
 
             classification = "confirmed" if confirmed else "unknown"
             item = AgentInventoryItem(
@@ -772,6 +825,10 @@ class CorrelationEngine:
                 k8s_namespace=k8s_namespace,
                 k8s_workload=k8s_workload,
                 detection_layers=detection_layers,
+                model_id=model_id,
+                l5_framework=l5_framework,
+                caller_identity=caller_identity,
+                l5_event_count=l5_event_count,
             )
             try:
                 _file_path = (cf.get("file_path") or "") or ""
@@ -859,7 +916,10 @@ class CorrelationEngine:
                 risk_level="critical",
                 network_provider="bedrock",
                 last_seen=_latest_l5.get("timestamp"),
-                process_name=_principal or None,
+                caller_identity=_principal or None,
+                model_id=_latest_l5.get("model_id") or None,
+                l5_framework=_latest_l5.get("framework") or None,
+                l5_event_count=len(l5_bedrock),
                 detection_layers=["layer5"],
             )
             try:
@@ -869,6 +929,39 @@ class CorrelationEngine:
             except Exception:
                 pass
             inventory["ghost"].append(ghost_item)
+
+        # Layer 5 SSE Proxy GHOST: web-proxy LLM traffic with no matching Layer 1 code
+        # finding and not already accounted for by Layer 2/3/CloudTrail.
+        # Group by provider: one GHOST item per provider (dedup by username + provider).
+        if l5_sse_proxy:
+            _sse_by_provider: Dict[str, list] = {}
+            for _sp in l5_sse_proxy:
+                _p = (_sp.get("provider") or "unknown").lower()
+                _sse_by_provider.setdefault(_p, []).append(_sp)
+            for _sp_provider, _sp_events in _sse_by_provider.items():
+                if _sp_provider in seen_providers:
+                    continue
+                seen_providers.add(_sp_provider)
+                _latest_sp = max(_sp_events, key=lambda _nf: _nf.get("timestamp") or "")
+                _sp_source = (_latest_sp.get("source") or "sse_proxy")
+                _sp_user = (_latest_sp.get("username") or "").strip()
+                ghost_item = AgentInventoryItem(
+                    agent_id=f"ghost:{_sp_provider}:{_sp_source}:{_sp_user[:40]}",
+                    classification="ghost",
+                    risk_level="critical",
+                    network_provider=_sp_provider,
+                    last_seen=_latest_sp.get("timestamp"),
+                    caller_identity=_sp_user or None,
+                    l5_event_count=len(_sp_events),
+                    detection_layers=["layer5_sse"],
+                )
+                try:
+                    _populate_saas_and_risk_flags(
+                        ghost_item, "", "", network_findings, layer4_findings
+                    )
+                except Exception:
+                    pass
+                inventory["ghost"].append(ghost_item)
 
         for provider, l4 in layer4_by_provider.items():
             if provider in seen_providers:

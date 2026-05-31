@@ -251,15 +251,16 @@ class TestBug2ConfirmedL1L5:
         item = inventory["confirmed"][0]
         assert item.last_seen == ts
 
-    def test_l1_plus_l5_process_name_is_iam_principal(self):
-        """process_name carries the IAM principal from CloudTrail (no L2 process)."""
+    def test_l1_plus_l5_caller_identity_is_iam_principal(self):
+        """caller_identity carries the IAM principal from CloudTrail (process_name stays None)."""
         arn = "arn:aws:iam::123456789012:role/BedrockAgentRole"
         inventory = CorrelationEngine.correlate(
             code_findings=[_cf_bedrock()],
             network_findings=[_l5_bedrock_finding(username=arn)],
         )
         item = inventory["confirmed"][0]
-        assert item.process_name == arn
+        assert item.caller_identity == arn
+        assert item.process_name is None  # L5 must not pollute the OS-process field
 
     def test_l1_plus_l2_plus_l5_all_three_layers(self):
         """When both L2 and L5 match, detection_layers contains all three."""
@@ -355,7 +356,8 @@ class TestBug3ShadowGhostMisattribution:
         item = ghost[0]
         assert item.detection_layers == ["layer5"]
         assert item.network_provider == "bedrock"
-        assert "LambdaRole" in (item.process_name or "")
+        assert "LambdaRole" in (item.caller_identity or "")
+        assert item.process_name is None  # L5 must not pollute the OS-process field
 
     def test_l5_ghost_agent_id_format(self):
         """Layer 5 ghost agent_id has the expected 'ghost:bedrock:cloudtrail:' prefix."""

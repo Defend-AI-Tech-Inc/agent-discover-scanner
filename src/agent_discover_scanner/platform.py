@@ -34,6 +34,17 @@ _SANDBOX_TENANT_TOKEN = "sandbox-token-001"
 _SANDBOX_API_KEY = "sandbox"
 _DEFAULT_WAWSDB_URL = "https://wauzeway.defendai.ai"
 
+# Mapping from correlator.py classification keys → wawsdb agent_class vocabulary.
+# The server drives final classification (ROGUE, lifecycle, etc.); this is a scanner hint.
+# SHADOW is the catch-all for anything not yet confirmed at runtime.
+_AGENT_CLASS_MAP: Dict[str, str] = {
+    "confirmed": "CONFIRMED",
+    "ghost": "GHOST",
+    "zombie": "ZOMBIE",
+    "unknown": "SHADOW",        # found in code, not yet observed at runtime
+    "shadow_ai_usage": "SHADOW",  # consumer/governance — shadow class
+}
+
 
 def load_credentials() -> Optional[Dict[str, str]]:
     """
@@ -172,7 +183,10 @@ def format_agents_for_upload(
                     )
                     saas_connections = {}
 
-            # Derive a human-friendly name with sensible fallbacks
+            # Derive a human-friendly name with sensible fallbacks.
+            # caller_identity is tried before the agent_id fallback so that L5-only GHOST
+            # agents (where process_name=None) get an IAM ARN / email as their name rather
+            # than the raw "ghost:bedrock:cloudtrail:…" agent_id string.
             name: str
             if item.get("k8s_workload"):
                 name = str(item["k8s_workload"])
@@ -180,6 +194,8 @@ def format_agents_for_upload(
                 name = str(item["k8s_pod"])
             elif item.get("process_name"):
                 name = str(item["process_name"])
+            elif item.get("caller_identity"):
+                name = str(item["caller_identity"])
             else:
                 # Fallback to code_file or agent_id with cleanup
                 raw = code_file_val or agent_id_val
@@ -211,6 +227,10 @@ def format_agents_for_upload(
             metadata = {
                 **item,
                 "classification": classification,
+                # agent_class uses the wawsdb contract vocabulary (CONFIRMED / GHOST /
+                # ZOMBIE / SHADOW).  The server drives the final classification; this
+                # is the scanner's hint based on what was observed during the scan.
+                "agent_class": _AGENT_CLASS_MAP.get(classification, "SHADOW"),
                 "hostname": _hostname,
                 "username": _username,
                 "os": _os,
@@ -244,6 +264,11 @@ def format_agents_for_upload(
                     "os": _os,
                     "saas_connections": metadata.get("saas_connections") or {},
                     "mcp_connections": metadata.get("mcp_connections") or {},
+                    # L5 enrichment promoted to top-level (server schema v2.8.0)
+                    "model_id": item.get("model_id"),
+                    "l5_framework": item.get("l5_framework"),
+                    "caller_identity": item.get("caller_identity"),
+                    "l5_event_count": item.get("l5_event_count") or 0,
                     "metadata": metadata,
                 }
             )
@@ -262,6 +287,11 @@ def upload_scan_results(
     high_risk_agent: Optional[Dict[str, Any]] = None,
     mcp_result: Optional[Dict[str, Any]] = None,
     scan_dir: Optional[str] = None,
+    # Signal-enhancement fields (v2.8.0)
+    scan_meta: Optional[Dict[str, Any]] = None,
+    network_interceptors: Optional[List[Dict[str, Any]]] = None,
+    cloud_audit_findings: Optional[List[Any]] = None,
+    sse_proxy_findings: Optional[List[Any]] = None,
 ) -> bool:
     """
     Upload scan results to DefendAI platform.
@@ -332,9 +362,8 @@ def upload_scan_results(
         layer4_findings=layer4_findings,
         mcp_result=mcp_result,
     )
-    if not agents:
-        # Nothing to upload; treat as success from the caller's perspective
-        return True
+    # Do NOT early-return when agents=[].  The contract requires an ingest call on every
+    # scan so the server receives scan_meta + raw L5 findings even when nothing was found.
 
     if high_risk_agent is None:
         try:
@@ -364,10 +393,17 @@ def upload_scan_results(
     payload = {
         "hostname": hostname,
         "scan_id": scan_id,
+        # git_remote at top-level per contract (also present inside scan_meta)
+        "git_remote": (scan_meta or {}).get("git_remote"),
         "agents": agents,
         "scanner_context": scanner_context,
         "high_risk_agent": high_risk_agent or {},
         "mcp_connections": mcp_result or {},
+        # Signal-enhancement fields (v2.8.0)
+        "scan_meta": scan_meta or {},
+        "network_interceptors": network_interceptors or [],
+        "cloud_audit_findings": cloud_audit_findings or [],
+        "sse_proxy_findings": sse_proxy_findings or [],
     }
 
     MAX_UPLOAD_BYTES = 1_000_000  # 1MB

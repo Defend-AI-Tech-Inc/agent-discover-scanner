@@ -69,7 +69,7 @@ def generate_aibom(inventory_json: Path, output_path: Path) -> dict[str, Any]:
             "tools": [
                 {
                     "vendor": "DefendAI",
-                    "name": "AgentDiscover Scanner",
+                    "name": "AgentDiscover",
                     "version": scanner_version,
                     "externalReferences": [
                         {

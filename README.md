@@ -313,6 +313,7 @@ AgentDiscover Scanner runs **five detection layers** simultaneously and correlat
 | 3 | Kubernetes runtime | Tetragon/eBPF events; K8s API fallback | Linux (eBPF); kubectl (K8s API) |
 | 4 | Endpoint discovery | osquery — packages, apps, browser history | osquery (optional) |
 | 5 | Cloud Audit | AWS CloudTrail, Azure Monitor (stub), GCP Audit Logs (stub) | AWS credentials (boto3) |
+| 5 | SSE Proxy | Zscaler ZIA web logs, Prisma Access / Cortex Data Lake | Credentials for Zscaler or Prisma |
 
 ![AgentDiscover detection pipeline](./docs/architecture.svg)
 
@@ -396,6 +397,84 @@ agentdiscover audit ~/projects \
 When Layer 5 findings are merged with Layer 2 network findings, the correlator can promote an agent from UNKNOWN to CONFIRMED even on VPC endpoints where psutil sees nothing. Layer 5 findings are written to `layer5_cloud_audit.json` in the output directory.
 
 > **Credential configuration.** The scanner uses standard boto3 credential resolution: `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` environment variables, `~/.aws/credentials`, or an EC2/ECS/EKS instance role. If no credentials are found, a clear warning is printed and the scan continues without Cloud Audit.
+
+### Layer 5 — SSE Proxy (v2.8.0+)
+
+**Why this matters for enterprise networks.** In environments with Secure Service Edge (SSE) proxies such as Zscaler ZIA or Palo Alto Prisma Access, all HTTPS traffic — including LLM API calls — is intercepted and TLS-inspected by the proxy. Layer 2 (psutil) sees the local IP of the proxy rather than `api.openai.com`, so it cannot identify LLM traffic. Layer 5 SSE Proxy solves this by querying the proxy's own web transaction logs, which contain the real destination hostname, the source user identity, and an allow/block disposition for every request.
+
+**What SSE proxy logs give you that psutil cannot:**
+
+- **Real destination hostname** — even when traffic flows through a zero-trust proxy
+- **User identity** — the `user@corp.com` principal from the proxy's identity provider integration, not just a PID
+- **Complete visibility across all machines** — a single query covers your entire organisation, not just the machine the scanner runs on
+- **Block/allow audit trail** — know which LLM calls your policy blocked, not just which ones succeeded
+
+**SSE proxy provider support matrix (v2.8.0):**
+
+| Provider | Product | Status | CLI flag |
+|---|---|---|---|
+| Zscaler | ZIA (web transaction logs) | **GA** | `--zscaler` |
+| Palo Alto Networks | Prisma Access / Cortex Data Lake | **GA** | `--prisma-access` |
+| Netskope | Security Cloud | Preview stub | *(coming soon)* |
+
+**Zscaler ZIA setup:**
+
+Set four environment variables before running:
+
+```bash
+export ZSCALER_API_KEY="your-api-key"      # from ZIA admin portal → Administration → API Key Management
+export ZSCALER_USERNAME="admin@corp.com"   # auditor or read-only admin role
+export ZSCALER_PASSWORD="your-password"
+export ZSCALER_TENANT="acme"               # tenant prefix: acme → https://acme.zsapi.net
+```
+
+The scanner uses Zscaler's HMAC-obfuscated session authentication — the same algorithm used by the official Zscaler Python SDK. Required role: **Auditor** (read-only access to web transaction logs).
+
+```bash
+agentdiscover scan-all ~/projects --zscaler --cloud-audit-hours 4
+
+# Override credentials at runtime (useful in CI):
+agentdiscover scan-all ~/projects \
+  --zscaler \
+  --zscaler-tenant acme \
+  --zscaler-api-key "$ZSCALER_API_KEY" \
+  --cloud-audit-hours 2
+```
+
+**Prisma Access / Cortex Data Lake setup:**
+
+```bash
+export PRISMA_CLIENT_ID="your-client-id"        # OAuth2 client ID from Prisma Access hub
+export PRISMA_CLIENT_SECRET="your-secret"
+export PRISMA_TENANT_ID="123456789"             # Tenant Service Group (TSG) ID
+export PRISMA_REGION="us"                       # us | eu | uk | sg | ca | jp | au
+```
+
+```bash
+agentdiscover scan-all ~/projects --prisma-access --cloud-audit-hours 4
+
+# Specify region explicitly:
+agentdiscover scan-all ~/projects \
+  --prisma-access \
+  --prisma-region eu \
+  --prisma-tenant-id "$PRISMA_TENANT_ID" \
+  --cloud-audit-hours 2
+```
+
+**Combining SSE Proxy with Cloud Audit:**
+
+Both sub-systems of Layer 5 run in parallel with each other and with Layers 1–4. You can enable all of them in a single command:
+
+```bash
+agentdiscover scan-all ~/projects \
+  --cloud-audit \
+  --cloud-audit-region us-east-1 \
+  --zscaler \
+  --prisma-access \
+  --cloud-audit-hours 4
+```
+
+SSE proxy findings are written to `layer5_sse_proxy.json`. The correlator treats them identically to Cloud Audit findings: a code finding (Layer 1) matching an SSE proxy event → **CONFIRMED**; an SSE proxy event with no code match → **GHOST** (with `process_name` set to the proxy's `user@corp.com` identity).
 
 ### Layer 3 — Kubernetes runtime
 
@@ -684,7 +763,7 @@ For a full-stack scan (all layers, structured output):
 ## Commands
 
 ```bash
-# Full scan (recommended) — all 4 layers + correlation
+# Full scan (recommended) — all layers + correlation
 agentdiscover scan-all PATH [OPTIONS]
   --duration/-d SECONDS      Network and K8s monitor observation window [default: 60]
   --output/-o PATH           Output directory for scan results [default: defendai-results]
@@ -705,6 +784,23 @@ agentdiscover scan-all PATH [OPTIONS]
   --src-repo-ttl INT         Daemon: minimum seconds between re-scans of --src-repo [default: 3600]
   --dry-run                  Check layer availability without running a scan
 
+  # Layer 5 — Cloud Audit (v2.7.0+)
+  --cloud-audit              Enable AWS CloudTrail Bedrock detection
+  --cloud-audit-region TEXT  AWS region [default: us-east-1]
+  --cloud-audit-hours INT    Lookback window in hours [default: 1 when --cloud-audit set]
+  --cloud-audit-lake-arn TEXT  CloudTrail Lake event data store ARN (near-real-time, ~60s delay)
+  --azure-monitor            [Preview] Enable Azure Monitor detection
+  --gcp-audit                [Preview] Enable GCP Cloud Audit Log detection
+
+  # Layer 5 — SSE Proxy (v2.8.0+)
+  --zscaler                  Enable Zscaler ZIA web-proxy log detection
+  --zscaler-tenant TEXT      Zscaler tenant prefix (overrides ZSCALER_TENANT)
+  --zscaler-api-key TEXT     Zscaler API key (overrides ZSCALER_API_KEY)
+  --prisma-access            Enable Prisma Access / Cortex Data Lake detection
+  --prisma-tenant-id TEXT    Prisma tenant / TSG ID (overrides PRISMA_TENANT_ID)
+  --prisma-client-id TEXT    Prisma OAuth2 client ID (overrides PRISMA_CLIENT_ID)
+  --prisma-region TEXT       CDL region: us/eu/uk/sg/ca/jp/au (overrides PRISMA_REGION)
+
 # Individual layers
 agentdiscover scan PATH              # Layer 1: source code only
 agentdiscover deps PATH              # Dependency scanning
@@ -714,6 +810,7 @@ agentdiscover endpoint               # Layer 4: endpoint scan only
 agentdiscover correlate              # Correlate existing scan outputs
 
 # Audit mode (v2.5.0+) — full report: aibom.json, ghost-agents.md, mcp-report.md
+# Accepts all --cloud-audit-* and --zscaler / --prisma-access flags above.
 agentdiscover audit PATH [OPTIONS]
   --duration/-d SECONDS      Observation window [default: 60]
   --output/-o PATH           Report output directory [default: defendai-audit]
@@ -763,6 +860,7 @@ Expected output: 2 CONFIRMED agents (crewai-agent, langchain-agent), 1 GHOST age
 | Endpoint discovery | osquery (optional — graceful degradation if not installed)                                         |
 | Layer 3 (eBPF)     | Linux only — unavailable on macOS and Windows. K8s API path works on all platforms.               |
 | Cloud Audit (Layer 5) | AWS credentials — boto3 credential chain (`AWS_ACCESS_KEY_ID`, `~/.aws/credentials`, or instance role). If credentials are absent, the scan continues without Cloud Audit. |
+| SSE Proxy (Layer 5) | Zscaler ZIA: `ZSCALER_API_KEY`, `ZSCALER_USERNAME`, `ZSCALER_PASSWORD`, `ZSCALER_TENANT` · Prisma Access: `PRISMA_CLIENT_ID`, `PRISMA_CLIENT_SECRET`, `PRISMA_TENANT_ID`. Disabled by default; enable with `--zscaler` or `--prisma-access`. |
 | Platform upload    | DefendAI API key ([defendai.ai](https://defendai.ai))                                              |
 
 Full Kubernetes setup: `install.sh` handles Helm, runtime monitoring setup, and permissions automatically.
@@ -775,7 +873,7 @@ AgentDiscover Scanner is the **discovery layer** of the DefendAI platform.
 
 | Component                 | Status         | Description                                                           |
 | ------------------------- | -------------- | --------------------------------------------------------------------- |
-| **AgentDiscover Scanner** | ✅ Open Source (v2.7.1) | Discover and classify AI agents across your environment  |
+| **AgentDiscover Scanner** | ✅ Open Source (v2.8.0) | Discover and classify AI agents across your environment  |
 | **defendai-agent**        | 🧪 Beta        | MITM proxy for real-time AI traffic inspection and policy enforcement |
 | **Correlation Engine**    | ✅ Available    | Cross-machine identity resolution and behavioral drift detection      |
 | **Policy Engine**         | 🚧 Coming Soon | Define and enforce agent behavior rules                               |

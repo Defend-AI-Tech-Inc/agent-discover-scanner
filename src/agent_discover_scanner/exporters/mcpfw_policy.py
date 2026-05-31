@@ -1,5 +1,5 @@
 """
-Convert AgentDiscover Scanner MCP findings into a runnable mcpfw policy dict.
+Convert AgentDiscover MCP findings into a runnable mcpfw policy dict.
 
 Entry point: export_mcpfw_policy(scan_result, stance) -> dict
 The returned dict serializes directly to valid mcpfw YAML.

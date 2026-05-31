@@ -316,6 +316,14 @@ def execute_scan_all(
     cloud_audit_lake_arn: Optional[str] = None,
     azure_monitor_enabled: bool = False,
     gcp_audit_enabled: bool = False,
+    # Layer 5 — SSE Proxy (v2.8.0+)
+    zscaler_enabled: bool = False,
+    zscaler_tenant: Optional[str] = None,
+    zscaler_api_key: Optional[str] = None,
+    prisma_access_enabled: bool = False,
+    prisma_tenant_id: Optional[str] = None,
+    prisma_client_id: Optional[str] = None,
+    prisma_region: Optional[str] = None,
     # Backward-compat aliases (deprecated; map to cloud_audit_* above)
     cloudtrail_enabled: bool = False,
     cloudtrail_region: Optional[str] = None,
@@ -381,6 +389,7 @@ def execute_scan_all(
     layer3_jsonl = output_dir / "layer3_k8s.jsonl"
     layer4_json = output_dir / "layer4_endpoint.json"
     layer5_json = output_dir / "layer5_cloud_audit.json"
+    layer5_sse_proxy_json = output_dir / "layer5_sse_proxy.json"
     inventory_path = output_dir / "agent_inventory.json"
 
     effective_layer: Optional[str] = None
@@ -525,6 +534,7 @@ def execute_scan_all(
     layer3_findings: list = []
     layer4_findings: list = []
     cloud_audit_findings: list = []
+    sse_proxy_findings: list = []
     findings_lock = threading.Lock()
 
     stop_event = threading.Event()
@@ -778,6 +788,49 @@ def execute_scan_all(
         except Exception as exc:
             logger.warning("Layer 5 (Cloud Audit) error: %s", exc)
 
+    def run_sse_proxy_once() -> None:
+        """Layer 5 — SSE Proxy: query Zscaler ZIA / Prisma Access for LLM web traffic."""
+        nonlocal sse_proxy_findings
+        _run_sse = zscaler_enabled or prisma_access_enabled
+        if not _run_sse:
+            return
+        try:
+            from agent_discover_scanner.detectors.sse_proxy import run_sse_proxy_detection
+
+            _sources = []
+            if zscaler_enabled:
+                _sources.append("Zscaler ZIA")
+            if prisma_access_enabled:
+                _sources.append("Prisma Access")
+            console.print(
+                f"[bold green]🔒 Querying SSE proxy logs "
+                f"({', '.join(_sources)}, Layer 5)...[/bold green]"
+            )
+            _effective_hours = cloud_audit_hours if cloud_audit_hours > 0 else 1
+            sp_findings = run_sse_proxy_detection(
+                hours_back=_effective_hours,
+                zscaler_enabled=zscaler_enabled,
+                zscaler_tenant=zscaler_tenant,
+                zscaler_api_key=zscaler_api_key,
+                prisma_access_enabled=prisma_access_enabled,
+                prisma_tenant_id=prisma_tenant_id,
+                prisma_client_id=prisma_client_id,
+                prisma_region=prisma_region,
+                _warn_fn=lambda msg: console.print(f"[yellow]⚠  {msg}[/yellow]"),
+            )
+            if sp_findings:
+                console.print(
+                    f"  [cyan]✓[/cyan] Layer 5 (SSE Proxy): "
+                    f"{len(sp_findings)} event(s) detected"
+                )
+            _rotate_file_if_needed(layer5_sse_proxy_json, max_log_size_bytes, max_log_backups)
+            layer5_sse_proxy_json.write_text(json.dumps({"findings": sp_findings}, indent=2))
+            if not daemon:
+                with findings_lock:
+                    sse_proxy_findings = sp_findings
+        except Exception as exc:
+            logger.warning("Layer 5 (SSE Proxy) error: %s", exc)
+
     def run_src_repo_once() -> str:
         """Clone (remote) or reuse (local) src_repo, run Layer 1, merge SARIF. Returns outcome."""
         if not src_repo or is_skipped(1):
@@ -899,6 +952,30 @@ def execute_scan_all(
                             existing_keys.add(key)
         except Exception:
             pass
+        # Merge Layer 5 (SSE Proxy) findings into the network findings list.
+        try:
+            if daemon:
+                if layer5_sse_proxy_json.exists():
+                    sp_data = json.loads(layer5_sse_proxy_json.read_text())
+                    nf = nf + (sp_data.get("findings") or [])
+            else:
+                with findings_lock:
+                    sp = list(sse_proxy_findings)
+                if not sp and layer5_sse_proxy_json.exists():
+                    try:
+                        sp_data = json.loads(layer5_sse_proxy_json.read_text())
+                        sp = sp_data.get("findings") or []
+                    except Exception:
+                        sp = []
+                if sp:
+                    existing_sp_keys = {(f.get("provider"), f.get("timestamp"), f.get("username")) for f in nf}
+                    for f in sp:
+                        key = (f.get("provider"), f.get("timestamp"), f.get("username"))
+                        if key not in existing_sp_keys:
+                            nf.append(f)
+                            existing_sp_keys.add(key)
+        except Exception:
+            pass
         console.print("[bold cyan]🔗 Correlating findings...[/bold cyan]\n")
         inventory = CorrelationEngine.correlate(
             code_findings=cf,
@@ -950,7 +1027,7 @@ def execute_scan_all(
     # Non-daemon: run once with layers in parallel
     hra_result: dict = {}
     if not daemon:
-        with ThreadPoolExecutor(max_workers=5) as executor:
+        with ThreadPoolExecutor(max_workers=6) as executor:
             futures = []
             # Fast tasks: Layer 1 + 4
             futures.append(executor.submit(run_layer1_once))
@@ -960,6 +1037,8 @@ def execute_scan_all(
             futures.append(executor.submit(run_layer3_once))
             # Layer 5 — Cloud Audit (runs independently of Layers 1-4)
             futures.append(executor.submit(run_layer5_once))
+            # Layer 5 — SSE Proxy (Zscaler ZIA / Prisma Access)
+            futures.append(executor.submit(run_sse_proxy_once))
             wait(futures)
 
         if src_repo and not is_skipped(1):

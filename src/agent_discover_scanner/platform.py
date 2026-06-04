@@ -215,14 +215,17 @@ def load_credentials() -> Optional[Dict[str, str]]:
         tenant_token = data.get("tenant_token") or data.get("tenant-token")
         wawsdb_url = data.get("wawsdb_url") or data.get("wawsdb-url")
 
-        if not (api_key and tenant_token and wawsdb_url):
+        # Only api_key is required; tenant_token and wawsdb_url are optional.
+        # A config with just api_key (and optionally wawsdb_url) is valid.
+        if not api_key:
             return None
 
-        return {
-            "api_key": str(api_key),
-            "tenant_token": str(tenant_token),
-            "wawsdb_url": str(wawsdb_url),
-        }
+        result: dict[str, str] = {"api_key": str(api_key)}
+        if tenant_token:
+            result["tenant_token"] = str(tenant_token)
+        if wawsdb_url:
+            result["wawsdb_url"] = str(wawsdb_url)
+        return result
     except Exception:
         # Never propagate errors from credential loading
         return None

@@ -7,6 +7,10 @@ Tests for platform.py enrichment functions added in v2.8.0 / v2.9.0:
   - format_agents_for_upload  (L5 enrichment + credential_files_found + L2 enrichment)
 """
 
+import json
+import os
+import tempfile
+
 import pytest
 
 from agent_discover_scanner.platform import (
@@ -15,6 +19,7 @@ from agent_discover_scanner.platform import (
     build_cloud_audit_summary,
     build_network_summary,
     format_agents_for_upload,
+    load_credentials,
 )
 
 
@@ -558,3 +563,102 @@ class TestFormatAgentsL2Enrichment:
         agent = self._fmt(report)[0]
         assert "evidence" in agent
         assert isinstance(agent["evidence"], list)
+
+
+# ── TestLoadCredentials ──────────────────────────────────────────────────────
+
+class TestLoadCredentials:
+    """
+    load_credentials() unit tests.
+
+    Verifies that:
+    - api_key alone (without tenant_token) is sufficient to return credentials
+    - tenant_token and wawsdb_url are optional fields
+    - Missing api_key always returns None
+    - Malformed / missing config file returns None cleanly
+    """
+
+    def _write_config(self, tmpdir: str, data: dict) -> str:
+        path = os.path.join(tmpdir, ".defendai", "config")
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w") as f:
+            json.dump(data, f)
+        return path
+
+    def _load(self, config_path: str):
+        """Patch the expanduser path and call load_credentials()."""
+        import agent_discover_scanner.platform as plat
+        original = plat.os.path.expanduser
+        plat.os.path.expanduser = lambda p: config_path if "config" in p else original(p)
+        try:
+            return load_credentials()
+        finally:
+            plat.os.path.expanduser = original
+
+    def test_api_key_and_all_fields_returns_full_dict(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = self._write_config(tmp, {
+                "api_key": "key-abc",
+                "tenant_token": "tok-xyz",
+                "wawsdb_url": "https://custom.example.com",
+            })
+            result = self._load(cfg)
+            assert result is not None
+            assert result["api_key"] == "key-abc"
+            assert result["tenant_token"] == "tok-xyz"
+            assert result["wawsdb_url"] == "https://custom.example.com"
+
+    def test_api_key_only_returns_credentials(self):
+        """tenant_token absence must NOT prevent credential loading."""
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = self._write_config(tmp, {"api_key": "key-abc"})
+            result = self._load(cfg)
+            assert result is not None
+            assert result["api_key"] == "key-abc"
+            assert "tenant_token" not in result
+
+    def test_api_key_and_url_no_tenant_token(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = self._write_config(tmp, {
+                "api_key": "key-abc",
+                "wawsdb_url": "https://custom.example.com",
+            })
+            result = self._load(cfg)
+            assert result is not None
+            assert result["api_key"] == "key-abc"
+            assert result["wawsdb_url"] == "https://custom.example.com"
+            assert "tenant_token" not in result
+
+    def test_missing_api_key_returns_none(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = self._write_config(tmp, {
+                "tenant_token": "tok-xyz",
+                "wawsdb_url": "https://custom.example.com",
+            })
+            result = self._load(cfg)
+            assert result is None
+
+    def test_empty_config_returns_none(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = self._write_config(tmp, {})
+            result = self._load(cfg)
+            assert result is None
+
+    def test_api_key_hyphen_variant_accepted(self):
+        """Both api_key and api-key spellings should work."""
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = self._write_config(tmp, {"api-key": "key-hyphen"})
+            result = self._load(cfg)
+            assert result is not None
+            assert result["api_key"] == "key-hyphen"
+
+    def test_missing_config_file_returns_none(self):
+        """A path that doesn't exist must return None without raising."""
+        import agent_discover_scanner.platform as plat
+        original = plat.os.path.expanduser
+        plat.os.path.expanduser = lambda p: "/nonexistent/path/config"
+        try:
+            result = load_credentials()
+        finally:
+            plat.os.path.expanduser = original
+        assert result is None

@@ -485,28 +485,39 @@ def upload_scan_results(
         print(f"⚠️ Platform upload failed: {reason} (scan still succeeded)")
         return False
 
-    # Resolve credentials
+    # Resolve credentials.
+    #
+    # tenant_token is OPTIONAL — the API key alone is sufficient to authenticate.
+    # When a tenant_token is also provided it is forwarded as X-DefendAI-Tenant-Token
+    # for backwards-compatibility with multi-tenant deployments, but it is never
+    # required.  This means free-tier users can pass just --api-key and have the
+    # upload work without a second credential.
+    #
+    # Resolution order:
+    #   1. CLI arguments (api_key / tenant_token)
+    #   2. ~/.defendai/config
+    #   3. Built-in sandbox defaults (only when no api_key is found at all)
     source = "sandbox"
     resolved_api_key = api_key
     resolved_tenant_token = tenant_token
     resolved_wawsdb_url = wawsdb_url or _DEFAULT_WAWSDB_URL
 
-    if resolved_api_key and resolved_tenant_token:
+    if resolved_api_key:
+        # api_key alone is enough; tenant_token is supplemental
         source = "cli"
     else:
         cfg = load_credentials()
         if cfg:
-            # Only override from config when CLI values are missing
             if not resolved_api_key:
                 resolved_api_key = cfg.get("api_key")
             if not resolved_tenant_token:
                 resolved_tenant_token = cfg.get("tenant_token")
             resolved_wawsdb_url = cfg.get("wawsdb_url") or resolved_wawsdb_url
-            if resolved_api_key and resolved_tenant_token:
+            if resolved_api_key:
                 source = "config"
 
-    if not resolved_api_key or not resolved_tenant_token:
-        # Fall back to sandbox defaults
+    if not resolved_api_key:
+        # No api_key found anywhere — fall back to sandbox for preview
         resolved_api_key = _SANDBOX_API_KEY
         resolved_tenant_token = _SANDBOX_TENANT_TOKEN
         resolved_wawsdb_url = resolved_wawsdb_url or _DEFAULT_WAWSDB_URL
@@ -518,7 +529,7 @@ def upload_scan_results(
     elif source == "config":
         print("✓ Uploading to DefendAI platform (from ~/.defendai/config)...")
     else:
-        print("💡 No credentials provided — uploading to DefendAI sandbox for preview")
+        print("💡 No API key provided — uploading to DefendAI sandbox for preview")
 
     if mcp_result is None:
         try:
@@ -622,10 +633,13 @@ def upload_scan_results(
         else:
             print("⚠️  Large scan result truncated for upload")
 
-    headers = {
-        "X-DefendAI-Tenant-Token": resolved_tenant_token,
+    # X-DefendAI-Tenant-Token is included only when a tenant token is available.
+    # The Authorization: Bearer header carries the api_key and is always present.
+    headers: dict[str, str] = {
         "Authorization": f"Bearer {resolved_api_key}",
     }
+    if resolved_tenant_token:
+        headers["X-DefendAI-Tenant-Token"] = resolved_tenant_token
 
     try:
         with httpx.Client(timeout=30.0, verify=certifi.where()) as client:  # type: ignore[call-arg]

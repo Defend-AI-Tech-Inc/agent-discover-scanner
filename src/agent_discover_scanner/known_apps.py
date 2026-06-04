@@ -123,13 +123,18 @@ def load_platform_known_apps(
             except Exception:
                 pass
         else:
-            # Urllib fallback when SDK not installed
+            # Urllib fallback when SDK not installed.
+            # Use the same auth scheme as /scanner/ingest: Authorization: Bearer {api_key}
+            # X-DefendAI-Tenant-Token is included only when a tenant token is available.
             try:
                 import urllib.request
 
+                _headers: dict = {"Authorization": f"Bearer {api_key}"}
+                if tenant_token:
+                    _headers["X-DefendAI-Tenant-Token"] = tenant_token
                 req = urllib.request.Request(
                     f"{wawsdb_url.rstrip('/')}/scanner/config/known-apps",
-                    headers={"X-API-Key": api_key},
+                    headers=_headers,
                 )
                 with urllib.request.urlopen(req, timeout=5) as resp:
                     data = json.loads(resp.read().decode())

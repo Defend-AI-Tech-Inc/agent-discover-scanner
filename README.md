@@ -329,11 +329,19 @@ Passive observation of outbound connections to AI providers — OpenAI, Anthropi
 
 Real scan output:
 ```
-[DETECT] Google AI connection from Mail (PID: 776) → generativelanguage.googleapis.com:993
 [DETECT] OpenAI connection from Microsoft Edge Helper (PID: 4172) → api.openai.com:443
 [DETECT] Anthropic connection from Cursor Helper (PID: 61436) → api.anthropic.com:443
 [DETECT] OpenAI connection from OneDrive (PID: 96089) → api.openai.com:443
 ```
+
+**Forward-DNS correlation — reliable Bedrock detection without a CIDR list.**
+AWS Bedrock Runtime endpoints rotate across hundreds of generic EC2 IPs (e.g. `ec2-52-94-238-10.compute-1.amazonaws.com`). Reverse-DNS alone cannot recover the service name. At startup, Layer 2 proactively resolves all known LLM hostnames — including all regional Bedrock runtime and agent-runtime variants — and caches the resulting `IP → hostname` mappings with a short TTL. When psutil reports a connection to `52.94.238.10`, the forward-DNS cache immediately recovers `bedrock-runtime.us-east-1.amazonaws.com` and classifies the connection correctly, even as the IP rotates.
+
+**Port filter — eliminates false positives from shared IP space.**
+External LLM APIs use HTTPS exclusively. Connections to provider-adjacent IPs on non-HTTPS ports (e.g. port 993 IMAP on a Google IP) are dropped before classification. Private IPs (Ollama, local inference servers, internal proxies) are exempt from this filter.
+
+**Process introspection — framework detection at runtime.**
+When Layer 2 observes a live connection, it resolves the process cmdline to its Python entry script and runs the same L1 detection rules (DAI001–DAI007) against that file in-process. If a framework is identified (LangChain, CrewAI, AutoGen, etc.), the agent is immediately promoted to **CONFIRMED** — no prior static code scan and no CloudTrail required. Each finding carries a `framework_confidence` of `"high"` (signal in the entry script directly) or `"medium"` (signal in a sibling project file), and the resolved `entry_script` path for identity reconciliation with any parallel L1 scan.
 
 ### Layer 5 — Cloud Audit (v2.7.0+)
 
@@ -506,7 +514,16 @@ Scans developer machines, CI/CD runners, and workstations via osquery. Finds ins
 
 After all layers run, the correlator builds a unified agent identity. An agent seen in code (Layer 1), confirmed running in K8s (Layer 3), and observed making network calls (Layer 2) is a single correlated identity — not three separate findings.
 
-Agents present at runtime with **no Layer 1 match** become GHOST agents.
+**CONFIRMED paths** (any of the following is sufficient):
+- Layer 1 (code) + Layer 2 (live network connection)
+- Layer 1 (code) + Layer 3 (K8s / eBPF runtime event)
+- Layer 1 (code) + Layer 4 (osquery endpoint) + Layer 2 (network)
+- Layer 1 (code) + Layer 5 (CloudTrail Bedrock invocation or SSE proxy event)
+- **Layer 2 alone** — when process introspection identifies a framework from the running process entry script, a live connection is sufficient for CONFIRMED without a prior static scan
+
+Agents present at runtime with **no Layer 1 match** and no framework identified by process introspection become GHOST agents.
+
+The `entry_script` field carries the resolved Python entry-script path from Layer 2 process introspection. When both a static Layer 1 finding and a Layer 2 runtime finding exist for the same file, the platform merges them into a single agent record rather than treating them as two separate orphans.
 
 ### SaaS blast radius detection (v2.3.0+)
 
@@ -670,13 +687,17 @@ When connected to the platform, each scan triggers the **correlation engine** wh
 - **Cross-machine intelligence** — agent seen on 3 machines and crossed from dev into prod? Automatic risk escalation.
 - **SaaS blast radius** — platform aggregates confirmed SaaS connections across all scans and computes blast radius score.
 
-**What the scanner sends (v2.8.1+):**
+**What the scanner sends (v2.9.0+):**
 
-The upload payload now includes full Layer 2 and Layer 5 telemetry, not just Layer 1 code findings:
+The upload payload includes full Layer 2 and Layer 5 telemetry, not just Layer 1 code findings:
 
 | Field | Source | Contents |
 |---|---|---|
 | `agents[]` | All layers | Per-agent metadata including classification, risk, SaaS connections |
+| `agents[].detected_hosts` | Layer 2 ForwardDNSCache | DNS-correlated LLM/provider hostnames (e.g. `bedrock-runtime.us-east-1.amazonaws.com`) recovered before psutil classification — reliable even as provider IPs rotate |
+| `agents[].evidence` | Correlator | Ordered confirmation-source tags: `layer1_code_scan`, `layer2_network`, `layer2_process_introspection`, `layer2_dns_host`, `layer3_k8s_runtime`, `layer4_endpoint`, `layer5_cloudtrail`, `layer5_sse_proxy` |
+| `agents[].entry_script` | Layer 2 process introspection | Absolute path to the Python entry script resolved from the OS process cmdline — used to reconcile L1 `code_file` identity with the L2 runtime finding so the same agent is not reported as two orphans |
+| `agents[].framework_confidence` | Layer 2 process introspection | `"high"` = framework signal found in the entry script directly · `"medium"` = found in a sibling project file · `null` = not detected |
 | `agents[].metadata.bedrock_invocations` | Layer 5 CloudTrail | Number of Bedrock API calls attributed to this agent |
 | `agents[].metadata.models_called` | Layer 5 CloudTrail | Model IDs invoked (e.g. `anthropic.claude-3-5-sonnet-20241022-v2:0`) |
 | `agents[].metadata.iam_users` | Layer 5 CloudTrail | IAM principals observed making calls |
@@ -904,12 +925,12 @@ Full Kubernetes setup: `install.sh` handles Helm, runtime monitoring setup, and 
 
 ## DefendAI platform
 
-AgentDiscover Scanner is the **discovery layer** of the DefendAI platform.
+agentscanner is the **discovery layer** of the DefendAI platform.
 
 | Component                 | Status         | Description                                                           |
 | ------------------------- | -------------- | --------------------------------------------------------------------- |
-| **AgentDiscover Scanner** | ✅ Open Source (v2.8.1) | Discover and classify AI agents across your environment  |
-| **defendai-agent**        | 🧪 Beta        | MITM proxy for real-time AI traffic inspection and policy enforcement |
+| **agentscanner**          | ✅ Open Source (v2.9.0) | Discover and classify AI agents across your environment  |
+| **defendai-sensor**       | 🧪 Beta        | MITM proxy for real-time AI traffic inspection and policy enforcement |
 | **Correlation Engine**    | ✅ Available    | Cross-machine identity resolution and behavioral drift detection      |
 | **Policy Engine**         | 🚧 Coming Soon | Define and enforce agent behavior rules                               |
 | **DefendAI Platform**     | 💼 Enterprise  | Full lifecycle governance for autonomous AI                           |

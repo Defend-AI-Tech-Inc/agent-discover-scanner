@@ -99,7 +99,7 @@ def _src_repo_id(src_repo: str) -> str:
     return hashlib.sha256(f"{socket.gethostname()}:{path}".encode()).hexdigest()[:12]
 
 
-def _get_git_remote(scan_root: Path) -> Optional[str]:
+def _get_git_remote(scan_root: Path) -> str | None:
     """Return the git remote origin URL for scan_root, or None if not in a git repo."""
     try:
         r = subprocess.run(
@@ -621,6 +621,13 @@ def execute_scan_all(
                         "provider": provider,
                         "process_name": conn.get("process"),
                         "timestamp": conn.get("timestamp"),
+                        # Process introspection — framework detected via L1 rules on entry script
+                        "framework": conn.get("framework"),
+                        "framework_confidence": conn.get("framework_confidence"),
+                        "entry_script": conn.get("entry_script"),
+                        # DNS-correlated hostname (e.g. bedrock-runtime.us-east-1.amazonaws.com)
+                        # recovered by ForwardDNSCache before psutil sees the connection.
+                        "detected_host": conn.get("remote_host"),
                     }
                 )
 

@@ -233,6 +233,8 @@ All output files land in `./defendai-results/`:
 | `layer2_network.json` | Live network connections observed during scan |
 | `layer3_k8s.jsonl` | Kubernetes workload events (if cluster available) |
 | `layer4_endpoint.json` | Installed packages, desktop apps, browser AI usage |
+| `layer5_cloud_audit.json` | AWS CloudTrail Bedrock invocations (when `--cloud-audit` set) |
+| `layer5_sse_proxy.json` | SSE proxy web-transaction findings (when `--zscaler` / `--prisma-access` set) |
 | `agent_inventory.json` | Final correlated agent inventory |
 
 For an executive-ready audit bundle (AIBOM + markdown reports):
@@ -323,7 +325,7 @@ Static analysis of Python and JavaScript/TypeScript. Detects LangChain, LangGrap
 
 ### Layer 2 — Live network monitoring
 
-Passive observation of outbound connections to AI providers — OpenAI, Anthropic, Google Gemini, Mistral, Cohere, Azure OpenAI, AWS Bedrock, and vector stores. No packet capture. Identifies which process is making each connection, enabling per-agent SaaS attribution.
+Passive observation of outbound connections to AI providers — OpenAI, Anthropic, Google Gemini, Mistral, Cohere, Azure OpenAI, AWS Bedrock, Grok/xAI, Groq, DeepSeek, Together AI, and vector stores. No packet capture. Identifies which process is making each connection, enabling per-agent SaaS attribution.
 
 Real scan output:
 ```
@@ -474,7 +476,7 @@ agentdiscover scan-all ~/projects \
   --cloud-audit-hours 4
 ```
 
-SSE proxy findings are written to `layer5_sse_proxy.json`. The correlator treats them identically to Cloud Audit findings: a code finding (Layer 1) matching an SSE proxy event → **CONFIRMED**; an SSE proxy event with no code match → **GHOST** (with `process_name` set to the proxy's `user@corp.com` identity).
+SSE proxy findings are written to `layer5_sse_proxy.json`. The correlator treats them identically to Cloud Audit findings: a code finding (Layer 1) matching an SSE proxy event → **CONFIRMED**; an SSE proxy event with no code match → **GHOST** (with `caller_identity` set to the proxy's `user@corp.com` principal — distinct from `process_name`, which is reserved for OS-level process identity from Layer 2/4).
 
 ### Layer 3 — Kubernetes runtime
 
@@ -668,6 +670,39 @@ When connected to the platform, each scan triggers the **correlation engine** wh
 - **Cross-machine intelligence** — agent seen on 3 machines and crossed from dev into prod? Automatic risk escalation.
 - **SaaS blast radius** — platform aggregates confirmed SaaS connections across all scans and computes blast radius score.
 
+**What the scanner sends (v2.8.1+):**
+
+The upload payload now includes full Layer 2 and Layer 5 telemetry, not just Layer 1 code findings:
+
+| Field | Source | Contents |
+|---|---|---|
+| `agents[]` | All layers | Per-agent metadata including classification, risk, SaaS connections |
+| `agents[].metadata.bedrock_invocations` | Layer 5 CloudTrail | Number of Bedrock API calls attributed to this agent |
+| `agents[].metadata.models_called` | Layer 5 CloudTrail | Model IDs invoked (e.g. `anthropic.claude-3-5-sonnet-20241022-v2:0`) |
+| `agents[].metadata.iam_users` | Layer 5 CloudTrail | IAM principals observed making calls |
+| `agents[].metadata.last_invocation` | Layer 5 CloudTrail | Timestamp of most recent Bedrock call |
+| `agents[].metadata.caller_identity` | Layer 5 CloudTrail / SSE proxy | IAM ARN or `user@corp.com` proxy principal |
+| `agents[].metadata.saas_connections.credential_files_found` | Layer 5 | `["IAM:alice@corp.com", ...]` — live-observed IAM identities |
+| `cloud_audit` | Layer 5 CloudTrail | Aggregated summary: total invocations, providers, models, IAM users, event type counts |
+| `network` | Layer 2 psutil | Aggregated summary: total connections, services, per-process connection counts |
+| `cloud_audit_findings[]` | Layer 5 CloudTrail | Raw CloudTrail events |
+| `sse_proxy_findings[]` | Layer 5 SSE proxy | Raw Zscaler / Prisma Access events |
+| `network_interceptors[]` | SSE proxy config | Active proxy configurations |
+| `scan_meta` | Scanner | `layers_active`, `layers_skipped` (integer arrays), `git_remote`, `scan_duration_seconds` |
+| `git_remote` | Git | Remote origin URL of the scanned repository |
+
+After upload the scanner prints a summary of what was synced:
+
+```
+✓ Platform sync complete
+  Agents uploaded:     5
+  Layer 5 events sent: 47
+  IAM users detected:  3
+  Models identified:   2
+  Network connections: 12
+  Dashboard: https://discover.defendai.ai/dashboard/agent_inventory
+```
+
 After a few scans, the DefendAI platform report shows:
 
 ```
@@ -708,7 +743,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - uses: Defend-AI-Tech-Inc/agent-discover-scanner@v2.7.1
+      - uses: Defend-AI-Tech-Inc/agent-discover-scanner@v2.8.1
         with:
           path: '.'               # directory to scan (default: .)
           upload-sarif: 'true'    # post findings to GitHub Security tab (default: true)
@@ -829,7 +864,7 @@ agent-discover [COMMAND] [OPTIONS]
 
 **AI frameworks:** LangChain, LangGraph, CrewAI, AutoGen, direct HTTP LLM clients
 
-**LLM providers:** OpenAI, Anthropic, Google Gemini / Google AI, Mistral, Cohere, Azure OpenAI, AWS Bedrock, Groq, DeepSeek
+**LLM providers:** OpenAI, Anthropic, Google Gemini / Google AI, Mistral, Cohere, Azure OpenAI, AWS Bedrock, Grok / xAI, Groq, DeepSeek, Together AI
 
 **Vector stores:** Pinecone, Weaviate, Qdrant, Chroma
 
@@ -873,7 +908,7 @@ AgentDiscover Scanner is the **discovery layer** of the DefendAI platform.
 
 | Component                 | Status         | Description                                                           |
 | ------------------------- | -------------- | --------------------------------------------------------------------- |
-| **AgentDiscover Scanner** | ✅ Open Source (v2.8.0) | Discover and classify AI agents across your environment  |
+| **AgentDiscover Scanner** | ✅ Open Source (v2.8.1) | Discover and classify AI agents across your environment  |
 | **defendai-agent**        | 🧪 Beta        | MITM proxy for real-time AI traffic inspection and policy enforcement |
 | **Correlation Engine**    | ✅ Available    | Cross-machine identity resolution and behavioral drift detection      |
 | **Policy Engine**         | 🚧 Coming Soon | Define and enforce agent behavior rules                               |

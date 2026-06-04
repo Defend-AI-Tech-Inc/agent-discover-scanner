@@ -7,11 +7,12 @@ not just new ones.
 
 import psutil
 import socket
+import threading
 import time
 import re
 import logging
 from typing import List, Dict, Optional
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 import json
@@ -22,6 +23,144 @@ _logger = logging.getLogger(__name__)
 
 # Compiled IPv4 pattern — used to distinguish raw IPs from resolved hostnames.
 _IPv4_RE = re.compile(r'^\d{1,3}(?:\.\d{1,3}){3}$')
+
+# ── Forward-DNS correlation ────────────────────────────────────────────────────
+
+# AWS regions where Bedrock runtime endpoints exist. These are pre-resolved at
+# startup so that rotating Bedrock IPs can be matched without reverse-DNS.
+_BEDROCK_REGIONS: tuple[str, ...] = (
+    "us-east-1", "us-west-2", "eu-west-1", "eu-central-1",
+    "ap-southeast-1", "ap-northeast-1", "ap-southeast-2",
+    "ap-south-1", "sa-east-1", "ca-central-1",
+    "us-gov-west-1", "ap-east-1", "me-south-1", "il-central-1",
+)
+
+# Hostnames that are forward-resolved at NetworkMonitor startup and on every
+# TTL refresh.  The Bedrock regional variants are the primary motivation —
+# bedrock-runtime.{region}.amazonaws.com rotates across dozens of generic
+# EC2 IPs whose reverse-DNS gives ec2-X-X-X.compute-1.amazonaws.com, not the
+# service name.  Proactive forward resolution maps every live IP back to the
+# service hostname before psutil even sees the connection.
+_LLM_SEED_HOSTNAMES: list[str] = [
+    "api.openai.com",
+    "api.anthropic.com",
+    "generativelanguage.googleapis.com",
+    "api.mistral.ai",
+    "api.groq.com",
+    "api.deepseek.com",
+    "api.together.xyz",
+    "api.x.ai",
+    "api.cohere.ai",
+    "api.perplexity.ai",
+    *[f"bedrock-runtime.{r}.amazonaws.com" for r in _BEDROCK_REGIONS],
+    *[f"bedrock-agent-runtime.{r}.amazonaws.com" for r in _BEDROCK_REGIONS],
+]
+
+# External LLM APIs exclusively use HTTPS.  Connections to these providers on
+# any other port are almost certainly email (993 IMAPS), database (5432), or
+# some other protocol sharing IP space with the AI provider's CDN.
+# Private/loopback IPs (Ollama, local inference) are exempt from this check.
+_EXTERNAL_LLM_PORTS: frozenset[int] = frozenset({443, 8443})
+
+
+def _is_private_ip(ip: str) -> bool:
+    """Return True if *ip* is loopback, link-local, or RFC-1918 / RFC-6598 private space."""
+    if not ip or ip in ("0.0.0.0", "::1", "::"):
+        return True
+    if ip.startswith("127.") or ip.startswith("169.254."):
+        return True
+    if ip.startswith("10.") or ip.startswith("192.168."):
+        return True
+    # IPv6 ULA (fc00::/7)
+    if ip.lower().startswith(("fc", "fd", "fe80")):
+        return True
+    # RFC-1918: 172.16.0.0/12  (172.16–172.31)
+    try:
+        parts = ip.split(".")
+        if len(parts) == 4 and parts[0] == "172" and 16 <= int(parts[1]) <= 31:
+            return True
+    except (ValueError, IndexError):
+        pass
+    return False
+
+
+class ForwardDNSCache:
+    """
+    Short-TTL forward-DNS correlation cache: IP → hostname.
+
+    Seeded by proactively resolving all known LLM service hostnames via
+    ``socket.getaddrinfo`` (the OS resolver, which honours /etc/hosts and
+    the system DNS cache).  Every resolved IP is stored with a TTL so that
+    rotating Bedrock / CDN IPs are refreshed automatically.
+
+    Also populated bidirectionally from successful reverse-DNS lookups in
+    ``_resolve_hostname`` so that *any* forward mapping the OS has performed
+    is captured without a separate seeding pass.
+
+    Thread-safe: a single ``threading.Lock`` guards all cache mutations.
+    """
+
+    DEFAULT_TTL: float = 60.0   # seconds; matches typical DNS TTLs for AWS endpoints
+
+    def __init__(self, ttl: float = DEFAULT_TTL) -> None:
+        self._ttl = ttl
+        # ip → (hostname, expires_at_monotonic)
+        self._cache: dict[str, tuple[str, float]] = {}
+        self._lock = threading.Lock()
+
+    # ── write ─────────────────────────────────────────────────────────────────
+
+    def observe(self, hostname: str, ip: str) -> None:
+        """Record that *hostname* forward-resolved to *ip*.  Thread-safe."""
+        expires = time.monotonic() + self._ttl
+        with self._lock:
+            self._cache[ip] = (hostname, expires)
+
+    def seed(self, hostnames: list[str]) -> None:
+        """
+        Resolve each hostname via ``socket.getaddrinfo`` and cache all
+        returned IPs.  Silently skips any hostname that fails to resolve
+        (network unavailable, NXDOMAIN, etc.).
+
+        Designed to be called in a background daemon thread so it never
+        blocks the monitor's main loop.
+        """
+        for hostname in hostnames:
+            try:
+                infos = socket.getaddrinfo(
+                    hostname, None,
+                    type=socket.SOCK_STREAM,
+                    flags=socket.AI_ADDRCONFIG,
+                )
+                for info in infos:
+                    ip = info[4][0]
+                    if ip:
+                        self.observe(hostname, ip)
+            except (socket.gaierror, OSError):
+                pass
+
+    # ── read ──────────────────────────────────────────────────────────────────
+
+    def lookup(self, ip: str) -> str | None:
+        """
+        Return the hostname associated with *ip* if it is cached and not
+        expired.  Evicts expired entries on read.  Thread-safe.
+        """
+        with self._lock:
+            entry = self._cache.get(ip)
+        if entry is None:
+            return None
+        hostname, expires = entry
+        if time.monotonic() > expires:
+            with self._lock:
+                self._cache.pop(ip, None)
+            return None
+        return hostname
+
+    def size(self) -> int:
+        """Return the number of cached entries (for testing / metrics)."""
+        with self._lock:
+            return len(self._cache)
 
 _BEDROCK_RANGES_URL = "https://ranges.defendai.ai/bedrock.json"
 _BEDROCK_FALLBACK_PATH = Path(__file__).parent / "data" / "bedrock_ips_fallback.json"
@@ -82,6 +221,10 @@ class AIConnection:
     local_port: int
     ai_service: str  # 'OpenAI', 'Anthropic', etc.
     connection_type: str  # 'tcp', 'udp'
+    # Populated by process introspection (L1 rules run against the entry script)
+    entry_script: str | None = None         # resolved abs path to the Python entry script
+    framework: str | None = None            # e.g. "LangChain/LangGraph"; None if not detected
+    framework_confidence: str | None = None # "high" = entry script direct, "medium" = project scan
 
 class NetworkMonitor:
     """Improved network monitor using psutil for better WebSocket detection"""
@@ -110,6 +253,29 @@ class NetworkMonitor:
         # AWS Bedrock — region-scoped dynamic hostnames; matched by substring
         'bedrock-runtime': 'AWS Bedrock',
         'bedrock-agent-runtime': 'AWS Bedrock Agent',
+
+        # xAI / Grok
+        'x.ai': 'xAI',
+        'api.x.ai': 'Grok API',
+
+        # Groq (inference platform)
+        'groq.com': 'Groq',
+        'api.groq.com': 'Groq API',
+
+        # Mistral AI
+        'mistral.ai': 'Mistral',
+        'api.mistral.ai': 'Mistral API',
+
+        # DeepSeek
+        'deepseek.com': 'DeepSeek',
+        'api.deepseek.com': 'DeepSeek API',
+
+        # Together AI
+        'together.ai': 'Together AI',
+        'api.together.xyz': 'Together AI API',
+
+        # Azure OpenAI (tenant-scoped; matched by substring in _is_ai_service)
+        'openai.azure.com': 'Azure OpenAI',
 
         # Other AI services
         'cohere.ai': 'Cohere',
@@ -234,8 +400,19 @@ class NetworkMonitor:
             return self._classify_ai_service(detected_hostname)
         return None
     
-    def __init__(self):
-        self._dns_cache = {}  # Cache DNS lookups
+    def __init__(self) -> None:
+        self._dns_cache: dict[str, str] = {}   # ip → hostname (reverse-DNS cache, no TTL)
+        self._fwd_dns = ForwardDNSCache()       # ip → hostname (forward-DNS, short TTL)
+        # Seed the forward-DNS cache in a background daemon thread so __init__ is
+        # non-blocking.  The seed resolves all LLM service hostnames (including every
+        # regional Bedrock variant) and populates the ip→hostname map before the first
+        # scan cycle finishes.
+        threading.Thread(
+            target=self._fwd_dns.seed,
+            args=(_LLM_SEED_HOSTNAMES,),
+            daemon=True,
+            name="fwd-dns-seed",
+        ).start()
     
     def _generate_summary(self, connections: List[AIConnection], duration: int) -> Dict:
         """Generate summary report"""
@@ -268,6 +445,10 @@ class NetworkMonitor:
                     'service': conn.ai_service,
                     'remote_host': conn.remote_host,
                     'remote_port': conn.remote_port,
+                    # Process introspection fields (None when not detected)
+                    'framework': conn.framework,
+                    'framework_confidence': conn.framework_confidence,
+                    'entry_script': conn.entry_script,
                 }
                 for conn in connections
             ]
@@ -305,14 +486,25 @@ class NetworkMonitor:
                     # Must have local address
                     if not conn.laddr:
                         continue
-                    
+
+                    # Port filter: external LLM APIs only ever use HTTPS (443 / 8443).
+                    # Skip any external connection on a non-HTTPS port to prevent
+                    # false-positives like :993 IMAP where Google/CDN IP ranges
+                    # overlap with AI provider address space.
+                    # Private IPs (Ollama, local inference, internal proxies) are exempt.
+                    if (
+                        not _is_private_ip(conn.raddr.ip)
+                        and conn.raddr.port not in _EXTERNAL_LLM_PORTS
+                    ):
+                        continue
+
                     # Resolve hostname (with IP-based detection fallback)
                     hostname = self._resolve_hostname(conn.raddr.ip)
                     
                     # Check if it's an AI service (check both hostname and IP)
                     ai_service = self._classify_ai_service(hostname) or self._classify_ai_service_by_ip(conn.raddr.ip)
                     if ai_service:
-                        connections.append(AIConnection(
+                        ai_conn = AIConnection(
                             timestamp=datetime.now(),
                             process_name=proc_name,
                             pid=proc_pid,
@@ -322,8 +514,21 @@ class NetworkMonitor:
                             remote_port=conn.raddr.port,
                             local_port=conn.laddr.port,
                             ai_service=ai_service,
-                            connection_type='tcp' if conn.type == socket.SOCK_STREAM else 'udp'
-                        ))
+                            connection_type='tcp' if conn.type == socket.SOCK_STREAM else 'udp',
+                        )
+                        # ── Layer 2 process introspection ──────────────────
+                        # Run L1 framework-detection rules (DAI001–007) against
+                        # the process's entry script so the connection carries
+                        # framework evidence for the correlator.
+                        try:
+                            from agent_discover_scanner.process_introspection import introspect_process
+                            intr = introspect_process(proc_pid)
+                            ai_conn.entry_script = intr.entry_script
+                            ai_conn.framework = intr.framework
+                            ai_conn.framework_confidence = intr.framework_confidence
+                        except Exception:
+                            pass  # introspection is best-effort; never block detection
+                        connections.append(ai_conn)
             
             except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
                 # Process ended or we don't have permission
@@ -386,32 +591,59 @@ class NetworkMonitor:
     
     def _resolve_hostname(self, ip: str) -> str:
         """
-        Resolve IP to hostname with IP-based detection fallback.
-        Uses reverse DNS first, then IP pattern matching for known AI services.
+        Resolve an IP address to a service hostname.
+
+        Resolution order
+        ----------------
+        1. **Forward-DNS correlation cache** (``_fwd_dns``) — highest priority.
+           Populated at startup by resolving all known LLM hostnames and refreshed
+           every TTL seconds.  This recovers service names like
+           ``bedrock-runtime.us-east-1.amazonaws.com`` from rotating IPs whose
+           reverse-DNS would only return a generic EC2 hostname.
+        2. **Reverse-DNS cache** (``_dns_cache``) — previously resolved via
+           ``socket.gethostbyaddr``.
+        3. **Live reverse-DNS** (``socket.gethostbyaddr``) — result is stored in
+           both caches so the forward-DNS map stays warm for the next lookup.
+        4. **IP-pattern heuristics** (``_detect_service_by_ip``) — last resort
+           when all DNS paths fail.
         """
+        # ── 1. Forward-DNS correlation (authoritative, short-TTL) ─────────────
+        fwd = self._fwd_dns.lookup(ip)
+        if fwd:
+            self._dns_cache[ip] = fwd   # keep reverse cache warm too
+            return fwd
+
+        # ── 2. Reverse-DNS cache hit ───────────────────────────────────────────
         if ip in self._dns_cache:
             return self._dns_cache[ip]
 
-        # First: reverse DNS lookup (hostname matching is more reliable than CDN IP matching)
+        # ── 3. Live reverse-DNS lookup ─────────────────────────────────────────
         try:
             hostname = socket.gethostbyaddr(ip)[0]
             hostname_l = (hostname or "").lower()
-            # Some CDN / generic reverse DNS results are not actionable; use IP fallback in that case.
+            # Cloudflare generic reverse-DNS is not actionable; try IP heuristics instead.
             if hostname_l and ("cloudflare" in hostname_l or hostname_l.endswith(".cdn.cloudflare.net")):
                 ip_based_hostname = self._detect_service_by_ip(ip)
                 if ip_based_hostname:
                     self._dns_cache[ip] = ip_based_hostname
                     return ip_based_hostname
-            self._dns_cache[ip] = hostname or ip
-            return hostname or ip
+            result = hostname or ip
+            self._dns_cache[ip] = result
+            # Populate forward-DNS cache bidirectionally so subsequent lookups
+            # of the same hostname's other IPs benefit from this resolution.
+            if hostname:
+                self._fwd_dns.observe(hostname, ip)
+            return result
         except (socket.herror, socket.gaierror, socket.timeout):
-            # If DNS fails, try IP-based detection (last resort), else return the IP string
-            ip_based_hostname = self._detect_service_by_ip(ip)
-            if ip_based_hostname:
-                self._dns_cache[ip] = ip_based_hostname
-                return ip_based_hostname
-            self._dns_cache[ip] = ip
-            return ip
+            pass
+
+        # ── 4. IP-pattern heuristics ───────────────────────────────────────────
+        ip_based_hostname = self._detect_service_by_ip(ip)
+        if ip_based_hostname:
+            self._dns_cache[ip] = ip_based_hostname
+            return ip_based_hostname
+        self._dns_cache[ip] = ip
+        return ip
     
     def _detect_service_by_ip(self, ip: str) -> Optional[str]:
         """

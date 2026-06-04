@@ -108,6 +108,25 @@ class AgentInventoryItem:
     caller_identity: Optional[str] = None   # IAM ARN / email from cloud audit (not OS process)
     l5_event_count: int = 0                 # Number of raw L5 events that contributed
 
+    # Layer 2 process-introspection + DNS-correlation enrichment (v2.9.0)
+    # entry_script: abs path of the Python entry script resolved from the process cmdline.
+    #   For L1+L2 CONFIRMED: used to reconcile with the L1 code_file identity so the
+    #   same agent is not reported as two orphans (one from code scan, one from runtime).
+    #   For L2-only CONFIRMED: mirrors code_file (set to the same value).
+    entry_script: Optional[str] = None
+    # detected_hosts: LLM/provider hostnames recovered via ForwardDNSCache before the
+    #   connection is matched by the correlator.  Includes regional Bedrock endpoints
+    #   (bedrock-runtime.us-east-1.amazonaws.com) that reverse-DNS alone cannot recover.
+    detected_hosts: List[str] = field(default_factory=list)
+    # framework_confidence: "high" when the framework was found in the entry script
+    #   directly; "medium" when a sibling project file matched; None if not detected.
+    framework_confidence: Optional[str] = None
+    # evidence: ordered list of confirmation-source tags that drove this item's
+    #   classification.  Used by wawsdb for audit trails and UI badge display.
+    #   e.g. ["layer1_code_scan", "layer2_network", "layer2_process_introspection",
+    #          "layer2_dns_host", "layer5_cloudtrail"]
+    evidence: List[str] = field(default_factory=list)
+
     # SaaS and risk (populated during correlation)
     saas_connections: Dict[str, Any] = field(default_factory=dict)
     risk_flags: List[str] = field(default_factory=list)
@@ -120,6 +139,44 @@ class AgentInventoryItem:
 
     def to_dict(self) -> dict:
         return asdict(self)
+
+
+def _build_evidence_tags(
+    detection_layers: list[str],
+    entry_script: str | None = None,
+    detected_host: str | None = None,
+) -> list[str]:
+    """
+    Build the ordered list of evidence-source tags for an inventory item.
+
+    Tags are additive — each represents an independent confirmation signal:
+    - ``layer1_code_scan``             — L1 AST-based code finding
+    - ``layer2_network``               — L2 psutil live-connection observation
+    - ``layer2_process_introspection`` — L2 process cmdline + L1 rules identified framework
+    - ``layer2_dns_host``              — DNS-correlated LLM hostname recovered via ForwardDNSCache
+    - ``layer3_k8s_runtime``           — L3 Kubernetes / Tetragon eBPF event
+    - ``layer4_endpoint``              — L4 osquery endpoint discovery
+    - ``layer5_cloudtrail``            — L5 AWS CloudTrail Bedrock invocation
+    - ``layer5_sse_proxy``             — L5 SSE/CASB proxy LLM traffic record
+    """
+    tags: list[str] = []
+    if "layer1" in detection_layers:
+        tags.append("layer1_code_scan")
+    if "layer2" in detection_layers:
+        tags.append("layer2_network")
+        if entry_script:
+            tags.append("layer2_process_introspection")
+        if detected_host:
+            tags.append("layer2_dns_host")
+    if "layer3" in detection_layers:
+        tags.append("layer3_k8s_runtime")
+    if "layer4" in detection_layers:
+        tags.append("layer4_endpoint")
+    if "layer5" in detection_layers:
+        tags.append("layer5_cloudtrail")
+    if "layer5_sse" in detection_layers:
+        tags.append("layer5_sse_proxy")
+    return tags
 
 
 def _populate_saas_and_risk_flags(
@@ -618,14 +675,24 @@ class CorrelationEngine:
         #
         # IMPORTANT: A runtime-only process/workload is only eligible for GHOST if we have a
         # confirmed active network connection to a known AI provider endpoint.
-        active_providers = {}
+        #
+        # When process introspection identified a framework (framework != None), that finding
+        # takes priority — it will later promote the entry to CONFIRMED instead of GHOST.
+        active_providers: Dict[str, Dict] = {}
         for nf in l2_network:
             provider = (nf.get("provider") or "unknown").lower()
             if provider in cls._PROVIDERS:
-                active_providers[provider] = {
-                    "process": nf.get("process_name", "unknown"),
-                    "timestamp": nf.get("timestamp"),
-                }
+                existing = active_providers.get(provider)
+                # Prefer the finding that has framework info (richer signal)
+                if existing is None or (not existing.get("framework") and nf.get("framework")):
+                    active_providers[provider] = {
+                        "process": nf.get("process_name", "unknown"),
+                        "timestamp": nf.get("timestamp"),
+                        "framework": nf.get("framework"),               # from L2 process introspection
+                        "framework_confidence": nf.get("framework_confidence"),  # "high"/"medium"/None
+                        "entry_script": nf.get("entry_script"),         # resolved script path
+                        "detected_host": nf.get("detected_host"),       # DNS-correlated hostname
+                    }
 
         # Index Layer 3 by provider (first match per provider for filling k8s fields)
         layer3_by_provider: Dict[str, Dict] = {}
@@ -741,12 +808,20 @@ class CorrelationEngine:
             network_provider = None
             last_seen = None
             process_name = None
+            # L2 enrichment fields — populated below if a live L2 match was made
+            l2_entry_script: str | None = None
+            l2_detected_host: str | None = None
+            l2_framework_confidence: str | None = None
 
             if match_provider:
                 if match_provider in active_providers:
                     info = active_providers[match_provider]
                     last_seen = info.get("timestamp")
                     process_name = info.get("process")
+                    # L2 enrichment: carry introspection + DNS data onto the inventory item
+                    l2_entry_script = info.get("entry_script")
+                    l2_detected_host = info.get("detected_host")
+                    l2_framework_confidence = info.get("framework_confidence")
                 network_provider = match_provider
             if matched_l3 is not None:
                 k8s_pod = matched_l3.get("pod")
@@ -829,6 +904,12 @@ class CorrelationEngine:
                 l5_framework=l5_framework,
                 caller_identity=caller_identity,
                 l5_event_count=l5_event_count,
+                # L2 enrichment: reconcile entry_script with L1 code_file so that the
+                # same agent is not treated as two orphans on the platform side.
+                entry_script=l2_entry_script,
+                detected_hosts=[l2_detected_host] if l2_detected_host else [],
+                framework_confidence=l2_framework_confidence,
+                evidence=_build_evidence_tags(detection_layers, l2_entry_script, l2_detected_host),
             )
             try:
                 _file_path = (cf.get("file_path") or "") or ""
@@ -840,7 +921,17 @@ class CorrelationEngine:
                 pass
             inventory[classification].append(item)
 
-        # GHOST / SHADOW_AI_USAGE: Layer 2/3/4/5 activity with no code finding
+        # CONFIRMED (L2-introspection) / GHOST / SHADOW_AI_USAGE:
+        # Layer 2/3/4/5 activity with no prior Layer 1 code finding.
+        #
+        # Classification:
+        #   • known desktop app process  → shadow_ai_usage  (unchanged)
+        #   • live L2 connection AND framework detected via process introspection
+        #                                → CONFIRMED  (no L1 or L5 required)
+        #   • live L2 connection, no framework                → ghost
+        #
+        # Layer 5 CloudTrail is an *optional enrichment* (adds invocation_count)
+        # and is NOT a prerequisite for CONFIRMED status.
         seen_providers = {item.network_provider for item in inventory["confirmed"] if item.network_provider}
         _known_apps = known_apps or frozenset()
         for provider, info in active_providers.items():
@@ -848,24 +939,85 @@ class CorrelationEngine:
                 continue
             seen_providers.add(provider)
             process_name = info.get("process", "")
-            classification = "shadow_ai_usage" if is_known_desktop_app(process_name, _known_apps) else "ghost"
-            agent_id = f"shadow:{provider}:{process_name}" if classification == "shadow_ai_usage" else f"ghost:{provider}:{process_name}"
-            ghost_item = AgentInventoryItem(
-                agent_id=agent_id,
-                classification=classification,
-                risk_level="critical",
-                network_provider=provider,
-                last_seen=info.get("timestamp"),
-                process_name=process_name,
-                detection_layers=["layer2"],
-            )
-            try:
-                _populate_saas_and_risk_flags(
-                    ghost_item, "", "", network_findings, layer4_findings
+            process_framework = info.get("framework")             # set by L2 process introspection
+            entry_script = info.get("entry_script")               # resolved script path
+            detected_host = info.get("detected_host")             # DNS-correlated hostname
+            l2_fw_confidence = info.get("framework_confidence")   # "high"/"medium"/None
+
+            if is_known_desktop_app(process_name, _known_apps):
+                # Known consumer AI tool (Cursor, Claude Desktop, etc.) → Shadow AI
+                shadow_item = AgentInventoryItem(
+                    agent_id=f"shadow:{provider}:{process_name}",
+                    classification="shadow_ai_usage",
+                    risk_level="critical",
+                    network_provider=provider,
+                    last_seen=info.get("timestamp"),
+                    process_name=process_name,
+                    detection_layers=["layer2"],
+                    detected_hosts=[detected_host] if detected_host else [],
+                    evidence=_build_evidence_tags(["layer2"], None, detected_host),
                 )
-            except Exception:
-                pass
-            inventory[classification].append(ghost_item)
+                try:
+                    _populate_saas_and_risk_flags(
+                        shadow_item, "", "", network_findings, layer4_findings
+                    )
+                except Exception:
+                    pass
+                inventory["shadow_ai_usage"].append(shadow_item)
+
+            elif process_framework:
+                # Live connection + runtime framework identification = CONFIRMED.
+                # The process introspection ran L1 rules (DAI001–007) against the
+                # entry script in real time, giving us code-level evidence without
+                # requiring a prior static scan of that directory.
+                confirmed_item = AgentInventoryItem(
+                    agent_id=entry_script or f"confirmed:{provider}:{process_name}",
+                    classification="confirmed",
+                    risk_level="high",
+                    framework=process_framework,
+                    network_provider=provider,
+                    code_file=entry_script,
+                    last_seen=info.get("timestamp"),
+                    process_name=process_name,
+                    detection_layers=["layer2"],
+                    # L2 enrichment — entry_script mirrors code_file for platform reconciliation
+                    entry_script=entry_script,
+                    detected_hosts=[detected_host] if detected_host else [],
+                    framework_confidence=l2_fw_confidence,
+                    evidence=_build_evidence_tags(["layer2"], entry_script, detected_host),
+                )
+                try:
+                    _populate_saas_and_risk_flags(
+                        confirmed_item,
+                        entry_script or "",
+                        str(Path(entry_script).parent) if entry_script else "",
+                        network_findings,
+                        layer4_findings,
+                    )
+                except Exception:
+                    pass
+                inventory["confirmed"].append(confirmed_item)
+
+            else:
+                # No framework evidence → GHOST (unmanaged runtime AI activity)
+                ghost_item = AgentInventoryItem(
+                    agent_id=f"ghost:{provider}:{process_name}",
+                    classification="ghost",
+                    risk_level="critical",
+                    network_provider=provider,
+                    last_seen=info.get("timestamp"),
+                    process_name=process_name,
+                    detection_layers=["layer2"],
+                    detected_hosts=[detected_host] if detected_host else [],
+                    evidence=_build_evidence_tags(["layer2"], None, detected_host),
+                )
+                try:
+                    _populate_saas_and_risk_flags(
+                        ghost_item, "", "", network_findings, layer4_findings
+                    )
+                except Exception:
+                    pass
+                inventory["ghost"].append(ghost_item)
 
         # Layer 3 GHOST: any pod/workload with no matching Layer 1 code finding,
         # but only when there is confirmed Layer 2 provider traffic.

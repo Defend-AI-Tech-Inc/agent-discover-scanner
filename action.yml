@@ -37,7 +37,7 @@ runs:
 
     - name: Install AgentDiscover Scanner
       shell: bash
-      run: pip install agent-discover-scanner
+      run: pip install agentdiscover
 
     - name: Scan source code for AI agents (Layer 1)
       shell: bash

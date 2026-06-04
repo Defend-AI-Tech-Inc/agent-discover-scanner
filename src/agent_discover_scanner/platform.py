@@ -37,13 +37,146 @@ _DEFAULT_WAWSDB_URL = "https://wauzeway.defendai.ai"
 # Mapping from correlator.py classification keys → wawsdb agent_class vocabulary.
 # The server drives final classification (ROGUE, lifecycle, etc.); this is a scanner hint.
 # SHADOW is the catch-all for anything not yet confirmed at runtime.
-_AGENT_CLASS_MAP: Dict[str, str] = {
+_AGENT_CLASS_MAP: dict[str, str] = {
     "confirmed": "CONFIRMED",
     "ghost": "GHOST",
     "zombie": "ZOMBIE",
     "unknown": "SHADOW",        # found in code, not yet observed at runtime
     "shadow_ai_usage": "SHADOW",  # consumer/governance — shadow class
 }
+
+
+def build_cloud_audit_summary(findings: list[Any]) -> dict[str, Any]:
+    """
+    Aggregate raw Layer 5 Cloud Audit findings into a structured analytics block.
+
+    Returns an empty dict when findings is empty so callers can skip the payload key.
+    The ``findings`` list is embedded as-is to avoid a second read at the call site.
+    """
+    if not findings:
+        return {}
+    providers: list[str] = sorted({(f.get("provider") or "unknown") for f in findings})
+    models_used: list[str] = sorted({
+        f.get("model_id") for f in findings if f.get("model_id")
+    })
+    iam_users: list[str] = sorted({
+        f.get("username") for f in findings if f.get("username")
+    })
+    event_types: dict[str, int] = {}
+    for f in findings:
+        et = f.get("event_name") or "Unknown"
+        event_types[et] = event_types.get(et, 0) + 1
+    return {
+        "total_invocations": len(findings),
+        "providers": providers,
+        "models_used": models_used,
+        "iam_users": iam_users,
+        "event_types": event_types,
+        "findings": findings,
+    }
+
+
+def build_network_summary(network_findings: list[Any]) -> dict[str, Any]:
+    """
+    Aggregate Layer 2 (psutil) network findings into a structured analytics block.
+
+    Filters out Layer 5 cloud-audit and SSE-proxy findings that may have been merged
+    into the network_findings list before this call.  Returns {} when no pure-L2
+    data is present.
+    """
+    _l5_layers = {"layer5_cloud_audit", "layer5_sse_proxy"}
+    l2_only = [
+        f for f in (network_findings or [])
+        if f.get("detection_layer") not in _l5_layers
+    ]
+    if not l2_only:
+        return {}
+    services_detected: list[str] = sorted({
+        f.get("service") or f.get("provider") or "unknown"
+        for f in l2_only
+        if f.get("service") or f.get("provider")
+    })
+    processes: dict[str, int] = {}
+    for f in l2_only:
+        pn = f.get("process_name") or f.get("process") or ""
+        if pn:
+            processes[pn] = processes.get(pn, 0) + 1
+    return {
+        "total_connections": len(l2_only),
+        "services_detected": services_detected,
+        "processes": processes,
+        "findings": l2_only,
+    }
+
+
+def _build_evidence_tags(item: dict[str, Any]) -> list[str]:
+    """
+    Return the ordered list of evidence-source tags for an agent record.
+
+    If the correlator already populated ``evidence`` (v2.9.0+), return it
+    directly.  Otherwise derive tags from ``detection_layers`` + available
+    enrichment fields so older inventory records still get meaningful tags.
+
+    Tags (stable wawsdb vocabulary):
+      layer1_code_scan             — AST code scan (L1)
+      layer2_network               — live psutil connection (L2)
+      layer2_process_introspection — framework found via L2 entry-script introspection
+      layer2_dns_host              — LLM hostname recovered via ForwardDNSCache
+      layer3_k8s_runtime           — Kubernetes / Tetragon eBPF (L3)
+      layer4_endpoint              — osquery endpoint discovery (L4)
+      layer5_cloudtrail            — AWS CloudTrail Bedrock invocation (L5)
+      layer5_sse_proxy             — SSE / CASB proxy LLM traffic (L5)
+    """
+    # Prefer pre-built tags emitted by the correlator
+    prebuilt: list[str] = list(item.get("evidence") or [])
+    if prebuilt:
+        return prebuilt
+
+    # Fallback derivation for older inventory records
+    tags: list[str] = []
+    detection_layers: list[str] = item.get("detection_layers") or []
+    if "layer1" in detection_layers:
+        tags.append("layer1_code_scan")
+    if "layer2" in detection_layers:
+        tags.append("layer2_network")
+        if item.get("entry_script") or item.get("framework_confidence"):
+            tags.append("layer2_process_introspection")
+        if item.get("detected_hosts"):
+            tags.append("layer2_dns_host")
+    if "layer3" in detection_layers:
+        tags.append("layer3_k8s_runtime")
+    if "layer4" in detection_layers:
+        tags.append("layer4_endpoint")
+    if "layer5" in detection_layers:
+        tags.append("layer5_cloudtrail")
+    if "layer5_sse" in detection_layers:
+        tags.append("layer5_sse_proxy")
+    return tags
+
+
+def _l5_events_for_agent(item: dict[str, Any], cloud_audit_findings: list[Any]) -> list[Any]:
+    """
+    Return the subset of cloud-audit findings attributable to this agent.
+
+    Matching precedence:
+    1. Exact IAM principal match on caller_identity / username
+    2. Provider match (bedrock → all bedrock findings)
+
+    Returns [] when no findings can be attributed.
+    """
+    if not cloud_audit_findings:
+        return []
+    # Exact IAM principal match — most precise attribution
+    caller = (item.get("caller_identity") or "").strip()
+    if caller:
+        exact = [f for f in cloud_audit_findings if (f.get("username") or "").strip() == caller]
+        if exact:
+            return exact
+    # Provider-level match (fallback)
+    provider = (item.get("network_provider") or "").lower()
+    if provider:
+        return [f for f in cloud_audit_findings if (f.get("provider") or "").lower() == provider]
+    return []
 
 
 def load_credentials() -> Optional[Dict[str, str]]:
@@ -100,6 +233,7 @@ def format_agents_for_upload(
     network_findings: Optional[List[Any]] = None,
     layer4_findings: Optional[List[Any]] = None,
     mcp_result: Optional[Dict[str, Any]] = None,
+    cloud_audit_findings: list[Any] | None = None,
 ) -> List[Dict[str, Any]]:
     """
     Convert scanner inventory report into /scanner/ingest agents[] format.
@@ -253,6 +387,41 @@ def format_agents_for_upload(
             except Exception:
                 pass
 
+            # Task 3 — per-agent Layer 5 enrichment.
+            # Matches cloud-audit events to this agent (by IAM principal or provider)
+            # and adds aggregate stats that power dashboard stat cards.
+            # Task 4 — credential evidence: IAM users are added to credential_files_found
+            # so the "Credential exposure" card shows real numbers instead of 0.
+            try:
+                l5_for_agent = _l5_events_for_agent(item, cloud_audit_findings or [])
+                if l5_for_agent:
+                    models_called = sorted({
+                        f.get("model_id") for f in l5_for_agent if f.get("model_id")
+                    })
+                    l5_iam_users = sorted({
+                        f.get("username") for f in l5_for_agent if f.get("username")
+                    })
+                    ts_list = [f.get("timestamp") for f in l5_for_agent if f.get("timestamp")]
+                    last_invocation = max(ts_list) if ts_list else None
+                    metadata["bedrock_invocations"] = len(l5_for_agent)
+                    metadata["models_called"] = models_called
+                    metadata["iam_users"] = l5_iam_users
+                    if last_invocation:
+                        metadata["last_invocation"] = last_invocation
+                    # Credential evidence: prefix IAM usernames so they're distinguishable
+                    if l5_iam_users:
+                        _cur_saas = dict(metadata.get("saas_connections") or {})
+                        _cred = list(_cur_saas.get("credential_files_found") or [])
+                        for _u in l5_iam_users:
+                            _iam_entry = f"IAM:{_u}"
+                            if _iam_entry not in _cred:
+                                _cred.append(_iam_entry)
+                        _cur_saas["credential_files_found"] = _cred
+                        metadata["saas_connections"] = _cur_saas
+                        saas_connections = _cur_saas
+            except Exception:
+                pass
+
             agents.append(
                 {
                     "name": name,
@@ -269,6 +438,12 @@ def format_agents_for_upload(
                     "l5_framework": item.get("l5_framework"),
                     "caller_identity": item.get("caller_identity"),
                     "l5_event_count": item.get("l5_event_count") or 0,
+                    # L2 enrichment: DNS-correlated hostnames, introspection evidence,
+                    # and entry-script path for L1↔L2 agent-identity reconciliation (v2.9.0)
+                    "detected_hosts": item.get("detected_hosts") or [],
+                    "evidence": _build_evidence_tags(item),
+                    "entry_script": item.get("entry_script"),
+                    "framework_confidence": item.get("framework_confidence"),
                     "metadata": metadata,
                 }
             )
@@ -288,10 +463,10 @@ def upload_scan_results(
     mcp_result: Optional[Dict[str, Any]] = None,
     scan_dir: Optional[str] = None,
     # Signal-enhancement fields (v2.8.0)
-    scan_meta: Optional[Dict[str, Any]] = None,
-    network_interceptors: Optional[List[Dict[str, Any]]] = None,
-    cloud_audit_findings: Optional[List[Any]] = None,
-    sse_proxy_findings: Optional[List[Any]] = None,
+    scan_meta: dict[str, Any] | None = None,
+    network_interceptors: list[dict[str, Any]] | None = None,
+    cloud_audit_findings: list[Any] | None = None,
+    sse_proxy_findings: list[Any] | None = None,
 ) -> bool:
     """
     Upload scan results to DefendAI platform.
@@ -361,6 +536,7 @@ def upload_scan_results(
         network_findings=network_findings,
         layer4_findings=layer4_findings,
         mcp_result=mcp_result,
+        cloud_audit_findings=cloud_audit_findings,
     )
     # Do NOT early-return when agents=[].  The contract requires an ingest call on every
     # scan so the server receives scan_meta + raw L5 findings even when nothing was found.
@@ -389,8 +565,13 @@ def upload_scan_results(
         "scanner_version": _metadata.version("agentdiscover"),
     }
 
+    # Build structured analytics summaries.
+    # cloud_audit / network power dashboard stat cards (invocation count, models, etc.)
+    _ca_summary = build_cloud_audit_summary(cloud_audit_findings or [])
+    _net_summary = build_network_summary(network_findings or [])
+
     # wawsdb: ScannerAgent (proxy_router.py) should include high_risk_agent: dict = {}
-    payload = {
+    payload: dict[str, Any] = {
         "hostname": hostname,
         "scan_id": scan_id,
         # git_remote at top-level per contract (also present inside scan_meta)
@@ -402,8 +583,12 @@ def upload_scan_results(
         # Signal-enhancement fields (v2.8.0)
         "scan_meta": scan_meta or {},
         "network_interceptors": network_interceptors or [],
+        # Raw L5 event arrays (server-side processing / storage)
         "cloud_audit_findings": cloud_audit_findings or [],
         "sse_proxy_findings": sse_proxy_findings or [],
+        # Structured summaries (dashboard stat cards)
+        "cloud_audit": _ca_summary,
+        "network": _net_summary,
     }
 
     MAX_UPLOAD_BYTES = 1_000_000  # 1MB
@@ -447,7 +632,18 @@ def upload_scan_results(
             response = client.post(url, json=payload, headers=headers)
 
         if 200 <= response.status_code < 300:
-            print(f"✓ Results uploaded (scan_id: {scan_id})")
+            # Task 5 — enhanced CLI summary
+            print("✓ Platform sync complete")
+            print(f"  Agents uploaded:     {len(agents)}")
+            if _ca_summary.get("total_invocations"):
+                print(f"  Layer 5 events sent: {_ca_summary['total_invocations']}")
+            if _ca_summary.get("iam_users"):
+                print(f"  IAM users detected:  {len(_ca_summary['iam_users'])}")
+            if _ca_summary.get("models_used"):
+                print(f"  Models identified:   {len(_ca_summary['models_used'])}")
+            if _net_summary.get("total_connections"):
+                print(f"  Network connections: {_net_summary['total_connections']}")
+            print("  Dashboard: https://discover.defendai.ai/dashboard/agent_inventory")
             return True
 
         reason = f"HTTP {response.status_code}"

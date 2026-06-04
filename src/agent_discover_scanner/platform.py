@@ -427,13 +427,22 @@ def format_agents_for_upload(
 
             agents.append(
                 {
+                    # Identity / display
+                    "agent_id": item.get("agent_id"),
                     "name": name,
                     "framework": framework,
                     "agent_type": agent_type,
                     "confidence_score": confidence_score,
+                    "risk_level": item.get("risk_level"),
+                    # Machine context
                     "hostname": _hostname,
                     "username": _username,
                     "os": _os,
+                    # Runtime context
+                    "process_name": item.get("process_name"),
+                    "code_file": item.get("code_file"),
+                    "last_seen": item.get("last_seen"),
+                    # SaaS / MCP blast radius
                     "saas_connections": metadata.get("saas_connections") or {},
                     "mcp_connections": metadata.get("mcp_connections") or {},
                     # L5 enrichment promoted to top-level (server schema v2.8.0)
@@ -660,7 +669,20 @@ def upload_scan_results(
                 print(f"  Models identified:   {len(_ca_summary['models_used'])}")
             if _net_summary.get("total_connections"):
                 print(f"  Network connections: {_net_summary['total_connections']}")
-            print("  Dashboard: https://discover.defendai.ai/dashboard/agent_inventory")
+            # Prefer tenant-specific dashboard URL from server response; fall back
+            # to a generic discover URL if the server doesn't return one.
+            _dashboard_url = "https://discover.defendai.ai/dashboard/agent_inventory"
+            try:
+                _resp_json = response.json()
+                if isinstance(_resp_json, dict):
+                    _dashboard_url = (
+                        _resp_json.get("dashboard_url")
+                        or _resp_json.get("tenant_dashboard_url")
+                        or _dashboard_url
+                    )
+            except Exception:
+                pass
+            print(f"  Dashboard: {_dashboard_url}")
             return True
 
         reason = f"HTTP {response.status_code}"

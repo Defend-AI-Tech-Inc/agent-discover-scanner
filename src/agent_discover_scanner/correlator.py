@@ -211,12 +211,24 @@ def _populate_saas_and_risk_flags(
 
     risk_flags = []
     detected = saas.get("detected", [])
+    is_shadow = item.classification == "shadow_ai_usage"
+
     if item.classification == "ghost" and detected:
         risk_flags.append("critical_ghost")
-    if saas.get("has_cloud_provider"):
+
+    # cloud_credentials_present and database_credentials_present require evidence of
+    # actual credentials (API keys, env vars, .env files) — not just network connections
+    # to cloud services.  Shadow AI agents are browsers / desktop apps: their network
+    # traffic to Azure/GCP/AWS is normal browsing, not credential usage.  Only flag
+    # when credential_files_found exist, or when the agent is code-backed (non-shadow).
+    has_actual_cred_evidence = bool(
+        saas.get("credential_files_found") or (not is_shadow)
+    )
+    if saas.get("has_cloud_provider") and has_actual_cred_evidence:
         risk_flags.append("cloud_credentials_present")
-    if saas.get("has_database_access"):
+    if saas.get("has_database_access") and has_actual_cred_evidence:
         risk_flags.append("database_credentials_present")
+
     if saas.get("has_external_api_calls") and item.classification == "unknown":
         risk_flags.append("unverified_saas_access")
     item.risk_flags = risk_flags

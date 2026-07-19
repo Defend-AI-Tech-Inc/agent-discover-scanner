@@ -13,6 +13,12 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import os
 
+from agent_discover_scanner.generation_defaults import (
+    classify_wrapper_key,
+    compute_threshold_flags,
+    has_any_signal,
+    resolve_generation_params,
+)
 from agent_discover_scanner.known_apps import build_known_apps, is_known_desktop_app
 
 
@@ -130,6 +136,45 @@ class AgentInventoryItem:
     # SaaS and risk (populated during correlation)
     saas_connections: Dict[str, Any] = field(default_factory=dict)
     risk_flags: List[str] = field(default_factory=list)
+
+    # Model identification (v2.7.1+) — local, free-pipeline model identity tiers.
+    # Distinct from (and never merged with) Layer 5's invocation-confirmed
+    # model_id / metadata.models_called, which remains the highest-confidence tier.
+    #
+    # declared_model / declared_model_source: Layer 1 static analysis — a model
+    #   identifier found via source (see signatures.py: extract_declared_model).
+    #   declared_model_source is "literal" (string constant kwarg) or
+    #   "resolved_constant" (kwarg was a Name resolved to a same-file constant).
+    declared_model: Optional[str] = None
+    declared_model_source: Optional[str] = None
+    # runtime_env_model / runtime_env_source: Layer 2 live process introspection —
+    # read from the actual environment of the running process (higher confidence
+    # than declared_model since it reflects live process memory, not source code).
+    # runtime_env_source is the matched env var name (e.g. "MODEL_NAME").
+    runtime_env_model: Optional[str] = None
+    runtime_env_source: Optional[str] = None
+
+    # Generation/sampling parameters (v2.10.0+) — Layer 1 static analysis.
+    # Facts only: raw values with honest provenance, one entry per tracked
+    # parameter (see generation_defaults.ALL_GENERATION_PARAMS), e.g.
+    #   {"temperature": {"value": 0.7, "source": "framework_default"},
+    #    "max_tokens": {"source": "unknown"}, ...}
+    # `source` is one of "literal" / "resolved_constant" (both mean: found
+    # explicitly in code — the "explicit" tier), "framework_default"
+    # (backfilled from the maintained defaults table), "not_applicable"
+    # (fixed/rejected by this provider+wrapper/model family — never has a
+    # `value`), or "unknown" (not found, no reliable default — never has a
+    # `value`). Only populated when there's real signal (a resolvable
+    # provider+wrapper OR at least one explicit value) — see
+    # generation_defaults.has_any_signal.
+    generation_params: Optional[Dict[str, Dict[str, Any]]] = None
+    # Threshold flags derived from generation_params (HIGH_TEMPERATURE,
+    # UNBOUNDED_MAX_TOKENS, ZERO_TEMPERATURE) — INFORMATIONAL ONLY.
+    # Deliberately never merged into risk_level/risk_flags/classification, and
+    # deliberately excluded from aibom.json (a formal BOM artifact shouldn't
+    # carry subjective flags). Consumed only by audit_reports.py's
+    # generation-params.md.
+    generation_param_flags: List[Dict[str, str]] = field(default_factory=list)
 
     def __post_init__(self):
         if self.discovered_at is None:
@@ -258,19 +303,23 @@ class CorrelationEngine:
             findings = []
             for run in sarif.get("runs", []):
                 for result in run.get("results", []):
-                    findings.append(
-                        {
-                            "rule_id": result.get("ruleId"),
-                            "file_path": result["locations"][0]["physicalLocation"][
-                                "artifactLocation"
-                            ]["uri"],
-                            "line": result["locations"][0]["physicalLocation"]["region"][
-                                "startLine"
-                            ],
-                            "message": result["message"]["text"],
-                            "level": result.get("level", "warning"),
-                        }
-                    )
+                    finding = {
+                        "rule_id": result.get("ruleId"),
+                        "file_path": result["locations"][0]["physicalLocation"][
+                            "artifactLocation"
+                        ]["uri"],
+                        "line": result["locations"][0]["physicalLocation"]["region"][
+                            "startLine"
+                        ],
+                        "message": result["message"]["text"],
+                        "level": result.get("level", "warning"),
+                    }
+                    # Structured data (e.g. declared_model tier) carried via SARIF's
+                    # standard properties bag — see sarif_output.py / signatures.py.
+                    properties = result.get("properties")
+                    if properties:
+                        finding["extracted"] = properties
+                    findings.append(finding)
 
             return findings
         except (json.JSONDecodeError, KeyError):
@@ -704,6 +753,12 @@ class CorrelationEngine:
                         "framework_confidence": nf.get("framework_confidence"),  # "high"/"medium"/None
                         "entry_script": nf.get("entry_script"),         # resolved script path
                         "detected_host": nf.get("detected_host"),       # DNS-correlated hostname
+                        # runtime_env_model tier — read live from the process's own
+                        # environment via psutil (process_introspection.py). Highest
+                        # local-scan confidence: reflects what the process actually
+                        # has in memory, not what's hardcoded in source.
+                        "runtime_env_model": nf.get("runtime_env_model"),
+                        "runtime_env_source": nf.get("runtime_env_source"),
                     }
 
         # Index Layer 3 by provider (first match per provider for filling k8s fields)
@@ -723,8 +778,44 @@ class CorrelationEngine:
         # Track which Layer 3 findings were matched to a code finding (for GHOST: unmatched = ghost)
         matched_l3_keys: set = set()  # (namespace, pod) tuples
 
+        # DAI008 (declared_model) findings are a metadata-enrichment signal, not an
+        # independent agent signal — they never become their own inventory item.
+        # Instead, index them by (file_path, line) so their `extracted` payload can
+        # be merged onto a co-located framework/provider finding (DAI001-DAI007 at
+        # the same call site) below.
+        model_by_location: Dict[Tuple[str, int], Dict] = {}
+        for cf in code_findings:
+            if cf.get("rule_id") == "DAI008" and cf.get("extracted", {}).get("declared_model"):
+                model_by_location[(cf.get("file_path"), cf.get("line"))] = cf["extracted"]
+
+        # DAI009 (generation params) findings are likewise metadata-enrichment,
+        # never an independent agent signal. Unlike DAI008 (matched by exact
+        # file+line), generation params are commonly set on a *different* call
+        # than the one that anchors the primary framework finding (e.g. the
+        # LLM wrapper constructor `ChatOpenAI(temperature=0.7)` vs. the
+        # `initialize_agent(...)` call it's passed into) — so these are
+        # indexed by file only and merged (union across all DAI009 findings
+        # in that file) onto every primary finding in the same file below.
+        genparams_by_file: Dict[str, Dict[str, Dict]] = {}
+        wrapper_hint_by_file: Dict[str, str] = {}
+        for cf in code_findings:
+            if cf.get("rule_id") not in ("DAI008", "DAI009"):
+                continue
+            extracted = cf.get("extracted") or {}
+            file_path = cf.get("file_path")
+            if not file_path:
+                continue
+            if extracted.get("wrapper_hint"):
+                wrapper_hint_by_file[file_path] = extracted["wrapper_hint"]
+            if cf.get("rule_id") == "DAI009":
+                found = extracted.get("generation_params") or {}
+                genparams_by_file.setdefault(file_path, {}).update(found)
+
         # Process code findings (Layer 1)
         for cf in code_findings:
+            if cf.get("rule_id") in ("DAI008", "DAI009"):
+                continue  # metadata-only; merged into same-file findings above
+
             agent_id = f"{cf['file_path']}:{cf['line']}"
             framework = cls.extract_framework_from_rule(cf["rule_id"])
 
@@ -741,6 +832,31 @@ class CorrelationEngine:
             matched_l3: Optional[Dict] = None
 
             possible = cls._code_finding_providers(cf)
+
+            # declared_model tier (Layer 1, static): either this finding directly
+            # carries `extracted` (e.g. Bedrock model-ID string literal), or a
+            # co-located DAI008 finding at the same file+line does.
+            _model_extracted = cf.get("extracted") or model_by_location.get(
+                (cf.get("file_path"), cf.get("line"))
+            )
+            declared_model = (_model_extracted or {}).get("declared_model")
+            declared_model_source = (_model_extracted or {}).get("declared_model_source")
+
+            # Generation/sampling parameters (facts, informational flags are separate
+            # — see module docstring on AgentInventoryItem.generation_param_flags).
+            _file_path_key = cf.get("file_path")
+            _explicit_genparams = genparams_by_file.get(_file_path_key, {})
+            _wrapper_hint = wrapper_hint_by_file.get(_file_path_key)
+            generation_params = None
+            generation_param_flags: List[Dict[str, str]] = []
+            _wrapper_key = classify_wrapper_key(
+                cf.get("rule_id"), cf.get("message"), _wrapper_hint, declared_model
+            )
+            if has_any_signal(_wrapper_key, _explicit_genparams):
+                generation_params = resolve_generation_params(
+                    _wrapper_key, declared_model, _explicit_genparams
+                )
+                generation_param_flags = compute_threshold_flags(generation_params)
 
             # Layer 5 enrichment locals — filled by supplemental blocks below.
             model_id = None
@@ -824,6 +940,8 @@ class CorrelationEngine:
             l2_entry_script: str | None = None
             l2_detected_host: str | None = None
             l2_framework_confidence: str | None = None
+            l2_runtime_env_model: str | None = None
+            l2_runtime_env_source: str | None = None
 
             if match_provider:
                 if match_provider in active_providers:
@@ -834,6 +952,8 @@ class CorrelationEngine:
                     l2_entry_script = info.get("entry_script")
                     l2_detected_host = info.get("detected_host")
                     l2_framework_confidence = info.get("framework_confidence")
+                    l2_runtime_env_model = info.get("runtime_env_model")
+                    l2_runtime_env_source = info.get("runtime_env_source")
                 network_provider = match_provider
             if matched_l3 is not None:
                 k8s_pod = matched_l3.get("pod")
@@ -922,6 +1042,12 @@ class CorrelationEngine:
                 detected_hosts=[l2_detected_host] if l2_detected_host else [],
                 framework_confidence=l2_framework_confidence,
                 evidence=_build_evidence_tags(detection_layers, l2_entry_script, l2_detected_host),
+                declared_model=declared_model,
+                declared_model_source=declared_model_source,
+                runtime_env_model=l2_runtime_env_model,
+                runtime_env_source=l2_runtime_env_source,
+                generation_params=generation_params,
+                generation_param_flags=generation_param_flags,
             )
             try:
                 _file_path = (cf.get("file_path") or "") or ""
@@ -955,6 +1081,8 @@ class CorrelationEngine:
             entry_script = info.get("entry_script")               # resolved script path
             detected_host = info.get("detected_host")             # DNS-correlated hostname
             l2_fw_confidence = info.get("framework_confidence")   # "high"/"medium"/None
+            l2_rt_env_model = info.get("runtime_env_model")       # runtime_env_model tier
+            l2_rt_env_source = info.get("runtime_env_source")
 
             if is_known_desktop_app(process_name, _known_apps):
                 # Known consumer AI tool (Cursor, Claude Desktop, etc.) → Shadow AI
@@ -997,6 +1125,8 @@ class CorrelationEngine:
                     detected_hosts=[detected_host] if detected_host else [],
                     framework_confidence=l2_fw_confidence,
                     evidence=_build_evidence_tags(["layer2"], entry_script, detected_host),
+                    runtime_env_model=l2_rt_env_model,
+                    runtime_env_source=l2_rt_env_source,
                 )
                 try:
                     _populate_saas_and_risk_flags(
@@ -1022,6 +1152,8 @@ class CorrelationEngine:
                     detection_layers=["layer2"],
                     detected_hosts=[detected_host] if detected_host else [],
                     evidence=_build_evidence_tags(["layer2"], None, detected_host),
+                    runtime_env_model=l2_rt_env_model,
+                    runtime_env_source=l2_rt_env_source,
                 )
                 try:
                     _populate_saas_and_risk_flags(

@@ -4,9 +4,178 @@ Signature registry for detecting AI agent frameworks and patterns.
 
 import ast
 from abc import ABC, abstractmethod
-from typing import Optional
+from typing import Any, Optional
 
 from agent_discover_scanner.visitor import ContextAwareVisitor, Finding
+
+# Keyword argument names used across LLM/agent SDKs to declare which model to call.
+# Kept intentionally narrow (AI-SDK-specific names) to minimize false positives.
+_MODEL_KWARGS = frozenset({
+    "model",            # OpenAI, Anthropic, Google Gemini, most SDKs
+    "model_name",       # older LangChain ChatOpenAI et al.
+    "deployment_name",  # Azure OpenAI
+    "azure_deployment",  # Azure OpenAI
+    "modelId",          # boto3 Bedrock invoke_model
+    "engine",           # legacy OpenAI
+})
+
+
+def extract_declared_model(
+    node: ast.Call, visitor: ContextAwareVisitor
+) -> Optional[dict[str, Any]]:
+    """
+    Inspect a call's keyword arguments for a known model-identifier parameter.
+
+    Returns {"declared_model": ..., "declared_model_source": "literal"} when the
+    value is a string constant, or {"declared_model": ..., "declared_model_source":
+    "resolved_constant"} when the value is a `Name` that resolves back to a
+    same-file constant assignment (see ContextAwareVisitor.constant_map).
+
+    Returns None when no recognized kwarg is present, or when a `Name` value
+    cannot be resolved — we never guess at a model identifier.
+    """
+    for keyword in node.keywords:
+        if keyword.arg not in _MODEL_KWARGS:
+            continue
+
+        value_node = keyword.value
+        if isinstance(value_node, ast.Constant) and isinstance(value_node.value, str):
+            return {"declared_model": value_node.value, "declared_model_source": "literal"}
+
+        if isinstance(value_node, ast.Name):
+            resolved = visitor.constant_map.get(value_node.id)
+            if isinstance(resolved, str):
+                return {"declared_model": resolved, "declared_model_source": "resolved_constant"}
+
+    return None
+
+
+# Keyword argument names for generation/sampling parameters, mapped to their
+# canonical form. Several providers use different names for the same concept
+# (e.g. OpenAI's `max_tokens` vs. the newer `max_completion_tokens` used by
+# reasoning models, vs. Google/Vertex's `max_output_tokens`); these all
+# collapse to one canonical key so the defaults table doesn't need to know
+# about every provider's naming quirk.
+_GENERATION_PARAM_KWARGS: dict[str, str] = {
+    "temperature": "temperature",
+    "top_p": "top_p",
+    "top_k": "top_k",
+    "max_tokens": "max_tokens",
+    "max_output_tokens": "max_tokens",
+    "max_completion_tokens": "max_tokens",
+    "frequency_penalty": "frequency_penalty",
+    "presence_penalty": "presence_penalty",
+    "stop": "stop",
+    "stop_sequences": "stop",  # Anthropic / Cohere naming
+    "seed": "seed",
+    "n": "n",
+}
+
+
+def _literal_value(node: ast.AST) -> tuple[Any, bool]:
+    """Return (value, True) if `node` is a literal we're willing to extract, else (None, False).
+
+    Handles plain constants (str/int/float/bool/None) and lists/tuples of
+    constants (needed for `stop`, e.g. `stop=["\\n", "END"]`).
+    """
+    if isinstance(node, ast.Constant):
+        return node.value, True
+    if isinstance(node, (ast.List, ast.Tuple)):
+        values = []
+        for element in node.elts:
+            if not isinstance(element, ast.Constant):
+                return None, False
+            values.append(element.value)
+        return values, True
+    return None, False
+
+
+def extract_generation_params(
+    node: ast.Call, visitor: ContextAwareVisitor
+) -> dict[str, dict[str, Any]]:
+    """
+    Inspect a call's keyword arguments for known generation/sampling parameters.
+
+    Same extraction rule as `extract_declared_model`: a literal value gets
+    source "literal"; a `Name` resolved via the prepass constant map gets
+    source "resolved_constant"; anything else is left absent — we never guess.
+
+    Returns a dict keyed by *canonical* parameter name (see
+    _GENERATION_PARAM_KWARGS), e.g. {"temperature": {"value": 0.7, "source": "literal"}}.
+    Only includes parameters actually found and resolved; may be empty.
+    """
+    found: dict[str, dict[str, Any]] = {}
+    for keyword in node.keywords:
+        canonical = _GENERATION_PARAM_KWARGS.get(keyword.arg or "")
+        if canonical is None:
+            continue
+
+        value_node = keyword.value
+        value, is_literal = _literal_value(value_node)
+        if is_literal:
+            found[canonical] = {"value": value, "source": "literal"}
+            continue
+
+        if isinstance(value_node, ast.Name):
+            resolved = visitor.constant_map.get(value_node.id)
+            if resolved is not None:
+                found[canonical] = {"value": resolved, "source": "resolved_constant"}
+
+    return found
+
+
+def _resolve_call_func_name(node: ast.Call, visitor: ContextAwareVisitor) -> Optional[str]:
+    """Shared attribute-chain function-name resolver (mirrors each Signature's own helper)."""
+    if isinstance(node.func, ast.Name):
+        return visitor.resolve_name(node.func.id)
+    if isinstance(node.func, ast.Attribute):
+        if isinstance(node.func.value, ast.Name):
+            base = visitor.resolve_name(node.func.value.id)
+            return f"{base}.{node.func.attr}"
+        if isinstance(node.func.value, ast.Attribute):
+            parts = [node.func.attr]
+            current: ast.AST = node.func.value
+            while isinstance(current, ast.Attribute):
+                parts.insert(0, current.attr)
+                current = current.value
+            if isinstance(current, ast.Name):
+                parts.insert(0, current.id)
+            resolved_root = visitor.resolve_name(parts[0])
+            return ".".join([resolved_root] + parts[1:])
+    return None
+
+
+def _classify_wrapper(func_name: Optional[str]) -> Optional[str]:
+    """
+    Classify a call-site function name into a defaults-table wrapper key.
+
+    This is a best-effort *hint* used by the correlator to look up the right
+    entry in the generation-param defaults table (see generation_defaults.py).
+    It never creates or blocks a Finding by itself.
+    """
+    if not func_name:
+        return None
+    fn = func_name.lower()
+
+    if "chatopenai" in fn or ("langchain" in fn and "openai" in fn):
+        return "langchain_chatopenai"
+    if "chatanthropic" in fn:
+        return "langchain_chatanthropic"
+    if "chatbedrock" in fn or "bedrockllm" in fn or "bedrockchat" in fn:
+        return "bedrock"
+    if fn.startswith("azureopenai.") or "azure_openai" in fn or "azurechatopenai" in fn:
+        return "azure_openai_raw_sdk"
+    if (
+        fn.startswith("openai.")
+        or ".chat.completions.create" in fn
+        or fn.endswith(".completions.create")
+    ):
+        return "openai_raw_sdk"
+    if fn.startswith("anthropic.") or fn.endswith(".messages.create") or "anthropicbedrock" in fn:
+        return "bedrock" if "anthropicbedrock" in fn else "anthropic_raw_sdk"
+    if fn.endswith(".invoke_model") or fn == "invoke_model":
+        return "bedrock"
+    return None
 
 
 class Signature(ABC):
@@ -550,6 +719,17 @@ class BedrockSignature(Signature):
 
         return None
 
+    # Subset of _BEDROCK_STRING_MARKERS that are model-ID prefixes (as opposed to
+    # service/endpoint markers like "bedrock-runtime") — only these populate
+    # `extracted.declared_model`, since the endpoint markers aren't model identifiers.
+    _BEDROCK_MODEL_ID_MARKERS = frozenset({
+        "mistral.mistral-large",
+        "anthropic.claude-",
+        "amazon.titan-",
+        "meta.llama",
+        "cohere.command",
+    })
+
     def check_constant(self, node: ast.Constant, visitor: ContextAwareVisitor) -> Optional[Finding]:  # type: ignore[override]
         value = getattr(node, "value", None)
         if not isinstance(value, str):
@@ -558,6 +738,11 @@ class BedrockSignature(Signature):
         val_lower = value.lower()
         for marker in self._BEDROCK_STRING_MARKERS:
             if marker in val_lower:
+                extracted = (
+                    {"declared_model": value, "declared_model_source": "literal"}
+                    if marker in self._BEDROCK_MODEL_ID_MARKERS
+                    else None
+                )
                 return Finding(
                     file_path=visitor.filename,
                     lineno=node.lineno,
@@ -565,6 +750,7 @@ class BedrockSignature(Signature):
                     rule_id=self.RULE_ID,
                     message=f"AWS Bedrock model/endpoint string detected: {marker!r}",
                     severity="note",
+                    extracted=extracted,
                 )
 
         return None
@@ -605,6 +791,81 @@ class BedrockSignature(Signature):
         return False
 
 
+class DeclaredModelSignature(Signature):
+    """
+    Detect declared model identifiers on any call — Layer 1 static ``declared_model``
+    tier (see extract_declared_model / _MODEL_KWARGS).
+
+    This does not by itself imply an AI agent/framework is present (it's purely a
+    metadata-enrichment signal); the correlator merges its ``extracted`` payload
+    onto a co-located framework/provider finding (DAI001-DAI007 at the same
+    file+line) rather than treating it as an independent agent signal.
+    """
+
+    RULE_ID = "DAI008"
+
+    def check(self, node: ast.Call, visitor: ContextAwareVisitor) -> Optional[Finding]:
+        extracted = extract_declared_model(node, visitor)
+        if not extracted:
+            return None
+
+        wrapper_hint = _classify_wrapper(_resolve_call_func_name(node, visitor))
+        if wrapper_hint:
+            extracted["wrapper_hint"] = wrapper_hint
+
+        return Finding(
+            file_path=visitor.filename,
+            lineno=node.lineno,
+            col_offset=node.col_offset,
+            rule_id=self.RULE_ID,
+            message=f"Declared model identifier detected: {extracted['declared_model']!r}",
+            severity="note",
+            extracted=extracted,
+        )
+
+
+class GenerationParamsSignature(Signature):
+    """
+    Detect generation/sampling parameters declared on any call — Layer 1 static
+    "explicit" tier (see extract_generation_params / _GENERATION_PARAM_KWARGS).
+
+    Like DeclaredModelSignature (DAI008), this is a metadata-enrichment signal
+    only, never an independent agent signal by itself. The correlator merges
+    its `extracted` payload (raw explicit values + an optional wrapper_hint)
+    onto framework/provider findings (DAI001-DAI007) found anywhere in the
+    same file, since sampling params are commonly set on a different call
+    (e.g. the LLM wrapper constructor) than the agent-initialization call
+    that anchors the primary finding.
+
+    Detects raw values only — the framework_default / not_applicable / unknown
+    provenance backfill for parameters NOT found here happens later in
+    generation_defaults.py, where framework + declared_model context is
+    available.
+    """
+
+    RULE_ID = "DAI009"
+
+    def check(self, node: ast.Call, visitor: ContextAwareVisitor) -> Optional[Finding]:
+        params = extract_generation_params(node, visitor)
+        if not params:
+            return None
+
+        extracted: dict[str, Any] = {"generation_params": params}
+        wrapper_hint = _classify_wrapper(_resolve_call_func_name(node, visitor))
+        if wrapper_hint:
+            extracted["wrapper_hint"] = wrapper_hint
+
+        return Finding(
+            file_path=visitor.filename,
+            lineno=node.lineno,
+            col_offset=node.col_offset,
+            rule_id=self.RULE_ID,
+            message=f"Generation parameters declared: {', '.join(sorted(params))}",
+            severity="note",
+            extracted=extracted,
+        )
+
+
 # Global signature registry
 SIGNATURE_REGISTRY: list[Signature] = [
     AutoGenSignature(),
@@ -614,4 +875,6 @@ SIGNATURE_REGISTRY: list[Signature] = [
     DirectHttpLlmClientSignature(),
     LlmApiStringSignature(),
     BedrockSignature(),
+    DeclaredModelSignature(),
+    GenerationParamsSignature(),
 ]

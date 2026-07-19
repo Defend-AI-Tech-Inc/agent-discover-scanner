@@ -5,6 +5,7 @@ AST visitor for building import context and detecting patterns.
 import ast
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 
 @dataclass
@@ -17,6 +18,11 @@ class Finding:
     rule_id: str
     message: str
     severity: str  # "error", "warning", "note"
+
+    # Structured data attached by signature rules (e.g. declared model identifiers)
+    # in addition to (or instead of) encoding it into the free-text message.
+    # Example: {"declared_model": "gpt-4", "declared_model_source": "literal"}
+    extracted: dict[str, Any] | None = None
 
     def __str__(self) -> str:
         return f"{self.file_path}:{self.lineno}:{self.col_offset} [{self.severity}] {self.rule_id}: {self.message}"
@@ -41,6 +47,13 @@ class ContextAwareVisitor(ast.NodeVisitor):
         # Track presence of known LLM API endpoint strings in this file
         self.llm_api_strings_present: bool = False
         self.llm_api_hosts: set[str] = set()
+
+        # Best-effort, same-file, flow-insensitive map of simple constant
+        # assignments: `NAME = <literal>` -> literal value. Lets call-site
+        # rules resolve a `Name` kwarg reference (e.g. `model=MODEL_NAME`)
+        # back to its literal value without cross-file/control-flow tracing.
+        # Last assignment wins; reassignment/branching is intentionally not modeled.
+        self.constant_map: dict[str, Any] = {}
 
         # Signature registry for detection
         self.signature_registry = signature_registry or []
@@ -76,6 +89,15 @@ class ContextAwareVisitor(ast.NodeVisitor):
                         finding = check_constant(node, self)  # type: ignore[misc]
                         if finding:
                             self._append_finding(finding)
+            elif isinstance(node, ast.Assign):
+                # Simple `NAME = <constant>` assignments only — flow-insensitive,
+                # last assignment in walk order wins. See self.constant_map docstring.
+                if (
+                    len(node.targets) == 1
+                    and isinstance(node.targets[0], ast.Name)
+                    and isinstance(node.value, ast.Constant)
+                ):
+                    self.constant_map[node.targets[0].id] = node.value.value
 
     def visit_Import(self, node: ast.Import):
         """

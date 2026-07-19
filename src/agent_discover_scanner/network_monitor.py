@@ -225,6 +225,11 @@ class AIConnection:
     entry_script: str | None = None         # resolved abs path to the Python entry script
     framework: str | None = None            # e.g. "LangChain/LangGraph"; None if not detected
     framework_confidence: str | None = None # "high" = entry script direct, "medium" = project scan
+    # runtime_env_model tier: read live from the process's own environment
+    # (see process_introspection._extract_runtime_env_model). Higher confidence
+    # than declared_model since it reflects the process's live memory.
+    runtime_env_model: str | None = None
+    runtime_env_source: str | None = None   # matched env var name, e.g. "MODEL_NAME"
 
 class NetworkMonitor:
     """Improved network monitor using psutil for better WebSocket detection"""
@@ -449,6 +454,8 @@ class NetworkMonitor:
                     'framework': conn.framework,
                     'framework_confidence': conn.framework_confidence,
                     'entry_script': conn.entry_script,
+                    'runtime_env_model': conn.runtime_env_model,
+                    'runtime_env_source': conn.runtime_env_source,
                 }
                 for conn in connections
             ]
@@ -526,6 +533,8 @@ class NetworkMonitor:
                             ai_conn.entry_script = intr.entry_script
                             ai_conn.framework = intr.framework
                             ai_conn.framework_confidence = intr.framework_confidence
+                            ai_conn.runtime_env_model = intr.runtime_env_model
+                            ai_conn.runtime_env_source = intr.runtime_env_source
                         except Exception:
                             pass  # introspection is best-effort; never block detection
                         connections.append(ai_conn)

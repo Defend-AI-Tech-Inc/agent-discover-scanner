@@ -1,0 +1,175 @@
+{
+  "_meta": {
+    "description": "Default sampling/generation parameter values and applicability per provider+wrapper combination. Used to backfill 'framework_default' / 'not_applicable' / 'unknown' provenance tiers for parameters NOT found explicitly at a call site. Never used to override an explicit value found in source.",
+    "last_verified": "2026-07-19",
+    "verification_notes": "Verified against current OpenAI/Azure OpenAI/Anthropic/LangChain/AWS Bedrock documentation as of last_verified. Values marked 'unknown' in wrapper/family tables below reflect cases where no numeric default is documented publicly (not an oversight) -- see per-entry 'note' fields. These values drift with provider API versions and should be re-verified periodically.",
+    "tier_meaning": {
+      "framework_default": "Parameter not found in code, but the wrapper/SDK has a known, documented default. 'value' carries that default.",
+      "not_applicable": "Parameter does not exist / is rejected / is fixed-and-non-configurable for this provider+wrapper (or model family). No 'value' is recorded -- the concept of a 'default' does not apply.",
+      "unknown": "Parameter not found in code, and no reliable default is known (either genuinely unbounded/unset, or provider does not publish a default). No 'value' is recorded -- absence should be read as 'set dynamically somewhere unseen', not 'using a default'."
+    }
+  },
+  "wrappers": {
+    "openai_raw_sdk": {
+      "_source": "OpenAI Chat Completions API reference (api-reference/chat/create-chat-completion)",
+      "temperature": {"tier": "framework_default", "value": 1.0},
+      "top_p": {"tier": "framework_default", "value": 1.0},
+      "top_k": {"tier": "not_applicable", "note": "OpenAI chat completions API has no top_k parameter"},
+      "max_tokens": {"tier": "unknown", "note": "no fixed default -- generation is unbounded up to the model's context/output limit if unset"},
+      "frequency_penalty": {"tier": "framework_default", "value": 0},
+      "presence_penalty": {"tier": "framework_default", "value": 0},
+      "stop": {"tier": "framework_default", "value": null, "note": "no stop sequences configured by default"},
+      "seed": {"tier": "framework_default", "value": null, "note": "no seed by default -- sampling is non-deterministic unless explicitly set"},
+      "n": {"tier": "framework_default", "value": 1}
+    },
+    "openai_reasoning": {
+      "_source": "OpenAI reasoning models guide; Azure OpenAI reasoning models docs; community-confirmed 400 error behavior for o1/o3/o4/gpt-5 series",
+      "_applies_to_model_pattern": "^(o1|o3|o4|gpt-5)",
+      "temperature": {"tier": "not_applicable", "note": "fixed/rejected on reasoning models -- API returns 400 if set to a non-default value"},
+      "top_p": {"tier": "not_applicable", "note": "fixed/rejected on reasoning models"},
+      "top_k": {"tier": "not_applicable"},
+      "max_tokens": {"tier": "unknown", "note": "reasoning models use max_completion_tokens; no fixed numeric default, and reasoning tokens also consume this budget"},
+      "frequency_penalty": {"tier": "not_applicable", "note": "fixed/rejected on reasoning models"},
+      "presence_penalty": {"tier": "not_applicable", "note": "fixed/rejected on reasoning models"},
+      "stop": {"tier": "framework_default", "value": null},
+      "seed": {"tier": "framework_default", "value": null},
+      "n": {"tier": "not_applicable", "note": "fixed at 1 on reasoning models"}
+    },
+    "azure_openai_raw_sdk": {
+      "_source": "Azure/azure-rest-api-specs AzureOpenAI inference.yaml -- mirrors raw OpenAI chat completions defaults",
+      "temperature": {"tier": "framework_default", "value": 1.0},
+      "top_p": {"tier": "framework_default", "value": 1.0},
+      "top_k": {"tier": "not_applicable"},
+      "max_tokens": {"tier": "unknown", "note": "no fixed default -- unbounded up to model limit if unset"},
+      "frequency_penalty": {"tier": "framework_default", "value": 0},
+      "presence_penalty": {"tier": "framework_default", "value": 0},
+      "stop": {"tier": "framework_default", "value": null},
+      "seed": {"tier": "framework_default", "value": null},
+      "n": {"tier": "framework_default", "value": 1}
+    },
+    "azure_openai_reasoning": {
+      "_source": "Microsoft Learn: Azure OpenAI reasoning models (o-series, gpt-5 series) -- 'Not Supported' parameter list",
+      "_applies_to_model_pattern": "^(o1|o3|o4|gpt-5)",
+      "temperature": {"tier": "not_applicable"},
+      "top_p": {"tier": "not_applicable"},
+      "top_k": {"tier": "not_applicable"},
+      "max_tokens": {"tier": "not_applicable", "note": "classic max_tokens is explicitly unsupported on Azure reasoning models; use max_completion_tokens, which has no fixed default"},
+      "frequency_penalty": {"tier": "not_applicable"},
+      "presence_penalty": {"tier": "not_applicable"},
+      "stop": {"tier": "framework_default", "value": null},
+      "seed": {"tier": "framework_default", "value": null},
+      "n": {"tier": "not_applicable"}
+    },
+    "anthropic_raw_sdk": {
+      "_source": "Anthropic Messages API reference (anthropic-sdk-python message_create_params.py); platform.claude.com Messages API docs",
+      "temperature": {"tier": "framework_default", "value": 1.0},
+      "top_p": {"tier": "framework_default", "value": null, "note": "applicable but unset by default on most models; not supported at all on Claude Opus 4.7+ (not modeled here)"},
+      "top_k": {"tier": "framework_default", "value": null, "note": "applicable but unset by default on most models; not supported at all on Claude Opus 4.7+ (not modeled here)"},
+      "max_tokens": {"tier": "unknown", "note": "REQUIRED parameter with no default per Anthropic docs -- absence means it is set dynamically elsewhere, not defaulted"},
+      "frequency_penalty": {"tier": "not_applicable", "note": "not an Anthropic Messages API parameter"},
+      "presence_penalty": {"tier": "not_applicable", "note": "not an Anthropic Messages API parameter"},
+      "stop": {"tier": "framework_default", "value": null, "note": "stop_sequences empty by default"},
+      "seed": {"tier": "not_applicable", "note": "not an Anthropic Messages API parameter"},
+      "n": {"tier": "not_applicable", "note": "not an Anthropic Messages API parameter"}
+    },
+    "langchain_chatopenai": {
+      "_source": "langchain-ai/langchain ChatOpenAI Pydantic field defaults (classic langchain.chat_models.openai / langchain.llms.openai); NOTE: newer langchain_openai releases may leave temperature unset (None), which falls through to the raw OpenAI SDK default of 1.0 instead -- version-dependent, re-verify if targeting langchain_openai>=0.2",
+      "temperature": {"tier": "framework_default", "value": 0.7, "note": "distinct from raw OpenAI SDK default of 1.0 -- this is the wrapper's own Pydantic field default"},
+      "top_p": {"tier": "unknown", "note": "no wrapper-level field default documented; falls through to model_kwargs pass-through"},
+      "top_k": {"tier": "not_applicable"},
+      "max_tokens": {"tier": "unknown", "note": "wrapper field default is None -- unbounded, same as raw SDK"},
+      "frequency_penalty": {"tier": "unknown"},
+      "presence_penalty": {"tier": "unknown"},
+      "stop": {"tier": "unknown"},
+      "seed": {"tier": "unknown"},
+      "n": {"tier": "framework_default", "value": 1, "note": "wrapper Pydantic field default: n: int = 1"}
+    },
+    "langchain_chatanthropic": {
+      "_source": "no confirmed wrapper-level field defaults found -- all params intentionally left unknown rather than guessed",
+      "temperature": {"tier": "unknown"},
+      "top_p": {"tier": "unknown"},
+      "top_k": {"tier": "unknown"},
+      "max_tokens": {"tier": "unknown"},
+      "frequency_penalty": {"tier": "not_applicable"},
+      "presence_penalty": {"tier": "not_applicable"},
+      "stop": {"tier": "unknown"},
+      "seed": {"tier": "not_applicable"},
+      "n": {"tier": "not_applicable"}
+    }
+  },
+  "bedrock_model_families": {
+    "_note": "Keyed by model-ID prefix pattern (matched against declared_model). Bedrock has no single wrapper-wide default -- each underlying model family defines its own request-body defaults, so this is intentionally nested rather than a flat 'bedrock' entry.",
+    "amazon.titan": {
+      "_source": "AWS docs: Amazon Titan Text models InvokeModel textGenerationConfig defaults",
+      "temperature": {"tier": "framework_default", "value": 0.7},
+      "top_p": {"tier": "framework_default", "value": 0.9},
+      "top_k": {"tier": "not_applicable", "note": "not part of Titan's textGenerationConfig schema"},
+      "max_tokens": {"tier": "framework_default", "value": 512, "note": "maxTokenCount default; applies across Titan Premier/Express/Lite"},
+      "frequency_penalty": {"tier": "not_applicable"},
+      "presence_penalty": {"tier": "not_applicable"},
+      "stop": {"tier": "framework_default", "value": null, "note": "stopSequences has no default"},
+      "seed": {"tier": "not_applicable"},
+      "n": {"tier": "not_applicable"}
+    },
+    "anthropic.claude": {
+      "_source": "AWS Bedrock InferenceConfiguration docs (defaults to the underlying model's native default) + Anthropic's own documented Claude default of temperature=1.0",
+      "temperature": {"tier": "framework_default", "value": 1.0},
+      "top_p": {"tier": "framework_default", "value": 1.0},
+      "top_k": {"tier": "not_applicable", "note": "unset/not used by default per AWS guidance"},
+      "max_tokens": {"tier": "unknown", "note": "required parameter on Bedrock's Claude Messages-style schema, mirrors raw Anthropic (no default)"},
+      "frequency_penalty": {"tier": "not_applicable"},
+      "presence_penalty": {"tier": "not_applicable"},
+      "stop": {"tier": "framework_default", "value": null},
+      "seed": {"tier": "not_applicable"},
+      "n": {"tier": "not_applicable"}
+    },
+    "meta.llama": {
+      "_source": "AWS docs: Meta Llama models on Bedrock -- temperature/top_p/max_gen_len documented as optional parameters, but no numeric default is published; intentionally left unknown rather than inferring one from example code",
+      "temperature": {"tier": "unknown"},
+      "top_p": {"tier": "unknown"},
+      "top_k": {"tier": "not_applicable", "note": "not part of Llama's Bedrock request schema"},
+      "max_tokens": {"tier": "unknown", "note": "max_gen_len -- optional, no published default"},
+      "frequency_penalty": {"tier": "not_applicable"},
+      "presence_penalty": {"tier": "not_applicable"},
+      "stop": {"tier": "not_applicable", "note": "not part of Llama's Bedrock request schema"},
+      "seed": {"tier": "not_applicable"},
+      "n": {"tier": "not_applicable"}
+    },
+    "mistral": {
+      "_source": "AWS docs: Mistral AI text/chat completion on Bedrock -- temperature/top_p/top_k documented as optional, no numeric default published",
+      "temperature": {"tier": "unknown"},
+      "top_p": {"tier": "unknown"},
+      "top_k": {"tier": "unknown"},
+      "max_tokens": {"tier": "unknown"},
+      "frequency_penalty": {"tier": "not_applicable"},
+      "presence_penalty": {"tier": "not_applicable"},
+      "stop": {"tier": "unknown"},
+      "seed": {"tier": "not_applicable"},
+      "n": {"tier": "not_applicable"}
+    },
+    "cohere.command": {
+      "_source": "AWS docs: Cohere Command models on Bedrock -- temperature/p/k documented as optional, no numeric default published",
+      "temperature": {"tier": "unknown"},
+      "top_p": {"tier": "unknown", "note": "Cohere's 'p' field"},
+      "top_k": {"tier": "unknown", "note": "Cohere's 'k' field"},
+      "max_tokens": {"tier": "unknown"},
+      "frequency_penalty": {"tier": "not_applicable"},
+      "presence_penalty": {"tier": "not_applicable"},
+      "stop": {"tier": "unknown", "note": "stop_sequences"},
+      "seed": {"tier": "not_applicable"},
+      "n": {"tier": "unknown", "note": "Cohere's num_generations field"}
+    },
+    "_unknown": {
+      "_source": "fallback for unrecognized/unmatched Bedrock model families -- no assumptions made",
+      "temperature": {"tier": "unknown"},
+      "top_p": {"tier": "unknown"},
+      "top_k": {"tier": "unknown"},
+      "max_tokens": {"tier": "unknown"},
+      "frequency_penalty": {"tier": "unknown"},
+      "presence_penalty": {"tier": "unknown"},
+      "stop": {"tier": "unknown"},
+      "seed": {"tier": "unknown"},
+      "n": {"tier": "unknown"}
+    }
+  }
+}

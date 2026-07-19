@@ -25,12 +25,39 @@ Design constraints
 
 import ast
 import logging
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 
 import psutil
 
 _logger = logging.getLogger(__name__)
+
+# ── Layer 2 runtime env model reader — security-critical allow/deny lists ──────
+#
+# introspect_process() reads the *entire* environ() of a live process via psutil.
+# That dict can contain API keys, DB passwords, and other secrets. This is a
+# security product — leaking credentials into our own AIBOM/inventory output
+# would be a critical, embarrassing defect. To prevent that:
+#   1. Only env var *names* matching the allowlist (case-insensitive substring)
+#      are even considered.
+#   2. Any name that also matches the denylist is dropped, even if it matched
+#      the allowlist (denylist always wins).
+#   3. Only the matched key name + its value are ever persisted/returned. The
+#      raw environ() dict itself must never leave _extract_runtime_env_model.
+_RUNTIME_ENV_ALLOWLIST = (
+    re.compile(r"MODEL", re.IGNORECASE),
+    re.compile(r"DEPLOYMENT", re.IGNORECASE),
+    re.compile(r"_ENGINE", re.IGNORECASE),
+)
+_RUNTIME_ENV_DENYLIST = (
+    re.compile(r"KEY", re.IGNORECASE),
+    re.compile(r"SECRET", re.IGNORECASE),
+    re.compile(r"TOKEN", re.IGNORECASE),
+    re.compile(r"PASSWORD", re.IGNORECASE),
+    re.compile(r"CREDENTIAL", re.IGNORECASE),
+    re.compile(r"AUTH", re.IGNORECASE),
+)
 
 # Filesystem markers that indicate a project root
 _PROJECT_ROOT_MARKERS = frozenset({
@@ -89,6 +116,10 @@ class ProcessIntrospectionResult:
     framework: str | None = None           # e.g. "LangChain/LangGraph", None if not detected
     framework_confidence: str | None = None  # "high" = entry script, "medium" = project scan
     rule_ids: list[str] = field(default_factory=list)  # e.g. ["DAI003"]
+    # Layer 2 "runtime_env_model" tier — read live from the process's own
+    # environment (psutil.Process(pid).environ()). See allow/denylist above.
+    runtime_env_model: str | None = None    # e.g. "gpt-4o" read from $MODEL_NAME
+    runtime_env_source: str | None = None   # the env var name that matched, e.g. "MODEL_NAME"
 
 
 # ── helpers ──────────────────────────────────────────────────────────────────
@@ -172,6 +203,12 @@ def _resolve_entry_script(cmdline: list[str], cwd: Path | None) -> Path | None:
     return None
 
 
+# DAI008 (declared_model) and DAI009 (generation params) are metadata-enrichment
+# signals, not framework signals — they must never by themselves drive
+# framework/confidence selection below.
+_NON_FRAMEWORK_RULE_IDS = frozenset({"DAI008", "DAI009"})
+
+
 def _scan_file_for_rules(file_path: Path, rule_ids_out: list[str]) -> None:
     """
     Parse *file_path* with the production ContextAwareVisitor + SIGNATURE_REGISTRY
@@ -198,8 +235,45 @@ def _scan_file_for_rules(file_path: Path, rule_ids_out: list[str]) -> None:
     visitor = ContextAwareVisitor(str(file_path), SIGNATURE_REGISTRY)
     visitor.visit(tree)
     for finding in visitor.findings:
+        if finding.rule_id in _NON_FRAMEWORK_RULE_IDS:
+            continue
         if finding.rule_id not in rule_ids_out:
             rule_ids_out.append(finding.rule_id)
+
+
+def _extract_runtime_env_model(pid: int) -> tuple[str | None, str | None]:
+    """
+    Best-effort read of a live process's environment for a declared model
+    identifier — the "runtime_env_model" tier (Layer 2, highest local-scan
+    confidence since it reflects what the process actually has in memory).
+
+    SECURITY: never raises, and never returns/logs/persists the raw environ()
+    dict. Only the single matched key name + value (allowlist AND NOT denylist)
+    are returned. See _RUNTIME_ENV_ALLOWLIST / _RUNTIME_ENV_DENYLIST above —
+    this exists specifically to prevent a security-monitoring tool from leaking
+    API keys/secrets into its own output.
+    """
+    try:
+        environ = psutil.Process(pid).environ()
+    except (psutil.AccessDenied, psutil.NoSuchProcess):
+        return None, None
+    except Exception as exc:
+        _logger.debug("process_introspection: environ() read failed for pid %s: %s", pid, exc)
+        return None, None
+
+    try:
+        for key, value in environ.items():
+            if not isinstance(key, str) or not isinstance(value, str) or not value:
+                continue
+            if any(pattern.search(key) for pattern in _RUNTIME_ENV_DENYLIST):
+                continue
+            if any(pattern.search(key) for pattern in _RUNTIME_ENV_ALLOWLIST):
+                return value, key
+    except Exception as exc:
+        _logger.debug("process_introspection: environ() scan failed for pid %s: %s", pid, exc)
+        return None, None
+
+    return None, None
 
 
 def _scan_for_framework(
@@ -281,6 +355,9 @@ def introspect_process(pid: int) -> ProcessIntrospectionResult:
         proc = psutil.Process(pid)
     except psutil.NoSuchProcess:
         return result
+
+    # Runtime env model read — best-effort, never blocks the rest of introspection.
+    result.runtime_env_model, result.runtime_env_source = _extract_runtime_env_model(pid)
 
     # --- psutil info (each attr can fail independently) ---
     try:

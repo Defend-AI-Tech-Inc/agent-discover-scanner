@@ -1012,11 +1012,12 @@ def audit(
 ):
     """
     Run the full scan-all pipeline into output/raw/, then write AIBOM JSON and Markdown reports
-    (ghost-agents.md, mcp-report.md, summary.md) beside raw/.
+    (ghost-agents.md, mcp-report.md, generation-params.md, summary.md) beside raw/.
     """
     from agent_discover_scanner.aibom import generate_aibom
     from agent_discover_scanner.audit_reports import (
         write_audit_summary,
+        write_generation_params_markdown,
         write_ghost_agents_markdown,
         write_mcp_markdown,
     )
@@ -1068,6 +1069,7 @@ def audit(
 
     generate_aibom(inv_path, output / "aibom.json")
     write_ghost_agents_markdown(inv_path, output / "ghost-agents.md")
+    write_generation_params_markdown(inv_path, output / "generation-params.md")
     write_audit_summary(report, output / "summary.md", raw_dir)
 
     nf: list = []

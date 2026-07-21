@@ -144,6 +144,12 @@ class SARIFGenerator:
             ],
         }
 
+        # Structured data (e.g. declared_model / declared_model_source) travels
+        # through SARIF's standard properties bag rather than being encoded into
+        # the free-text message.
+        if finding.extracted:
+            result["properties"] = dict(finding.extracted)
+
         return result
 
     @classmethod

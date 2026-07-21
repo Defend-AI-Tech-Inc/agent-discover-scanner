@@ -628,6 +628,9 @@ def execute_scan_all(
                         # DNS-correlated hostname (e.g. bedrock-runtime.us-east-1.amazonaws.com)
                         # recovered by ForwardDNSCache before psutil sees the connection.
                         "detected_host": conn.get("remote_host"),
+                        # runtime_env_model tier — read live from the process's own environment
+                        "runtime_env_model": conn.get("runtime_env_model"),
+                        "runtime_env_source": conn.get("runtime_env_source"),
                     }
                 )
 

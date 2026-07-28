@@ -63,6 +63,9 @@ Thumbs.db
 
 # Allow example JSON files
 !examples/**/*.json
+
+# Allow bundled package data files (read at runtime via Path(__file__).parent)
+!src/agent_discover_scanner/data/**/*.json
 .pypirc
 demo_*.txt
 demo_*.md

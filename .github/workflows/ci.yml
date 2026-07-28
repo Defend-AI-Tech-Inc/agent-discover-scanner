@@ -82,10 +82,57 @@ jobs:
     
     - name: Build package
       run: uv run python -m build
-    
+
     - name: Check package
       run: uv run twine check dist/*
-    
+
+    - name: Verify bundled data files are present in built artifacts
+      run: |
+        set -euo pipefail
+        echo "Wheel contents:"
+        unzip -l dist/*.whl
+        echo "Sdist contents:"
+        tar tzf dist/*.tar.gz
+        for f in generation_param_defaults.json bedrock_ips_fallback.json; do
+          echo "Checking for data/$f ..."
+          unzip -l dist/*.whl | grep -q "data/$f" || { echo "::error::$f missing from wheel"; exit 1; }
+          tar tzf dist/*.tar.gz | grep -q "data/$f" || { echo "::error::$f missing from sdist"; exit 1; }
+        done
+
+    - name: Install built wheel into a clean virtualenv (not the uv-sync dev env)
+      run: |
+        set -euo pipefail
+        python -m venv /tmp/ci-clean-venv
+        /tmp/ci-clean-venv/bin/pip install --quiet --upgrade pip
+        /tmp/ci-clean-venv/bin/pip install --quiet dist/*.whl
+
+    - name: Smoke test — bundled data files load from the installed wheel
+      run: |
+        set -euo pipefail
+        /tmp/ci-clean-venv/bin/python -c "
+        from agent_discover_scanner import generation_defaults as gd
+        from agent_discover_scanner.network_monitor import _BEDROCK_FALLBACK_PATH
+        import json
+
+        assert gd._DEFAULTS_PATH.exists(), f'{gd._DEFAULTS_PATH} not found in installed package'
+        defaults = json.loads(gd._DEFAULTS_PATH.read_text())
+        assert defaults, 'generation_param_defaults.json loaded but is empty'
+
+        assert _BEDROCK_FALLBACK_PATH.exists(), f'{_BEDROCK_FALLBACK_PATH} not found in installed package'
+        bedrock = json.loads(_BEDROCK_FALLBACK_PATH.read_text())
+        assert bedrock.get('flat_ips'), 'bedrock_ips_fallback.json loaded but has no flat_ips'
+
+        print('Bundled data files present and non-empty in installed wheel.')
+        "
+
+    - name: Smoke test — end-to-end scan against the installed wheel
+      run: |
+        set -euo pipefail
+        /tmp/ci-clean-venv/bin/agentdiscover audit demo/sample-repo --output /tmp/ci-audit-smoke --duration 3
+        test -f /tmp/ci-audit-smoke/generation-params.md
+        grep -qE "framework_default|not_applicable" /tmp/ci-audit-smoke/generation-params.md \
+          || { echo "::error::generation-params.md has no framework_default/not_applicable provenance — data file likely missing from installed package"; exit 1; }
+
     - name: Upload build artifacts
       uses: actions/upload-artifact@v4
       with:

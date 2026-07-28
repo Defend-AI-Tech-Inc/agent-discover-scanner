@@ -91,3 +91,16 @@ addopts = "-v --cov=agent_discover_scanner --cov-report=term-missing"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/agent_discover_scanner"]
+# Hatchling's default file selection is VCS-ignore-aware: it re-applies .gitignore
+# patterns at build time regardless of whether a file was force-committed to git.
+# The repo's blanket `*.json` gitignore rule would otherwise silently drop these
+# runtime-loaded data files from the wheel. `artifacts` is the hatchling-recommended
+# mechanism for including VCS-ignored files (see https://hatch.pypa.io/latest/config/build/#artifacts).
+artifacts = ["src/agent_discover_scanner/data/*.json"]
+
+[tool.hatch.build.targets.sdist]
+include = ["src/agent_discover_scanner", "tests", "README.md", "LICENSE", "CHANGELOG.md"]
+# Same VCS-ignore-aware exclusion applies to the sdist target; without this, files
+# built from the sdist (rather than a wheel built directly from git) would also
+# silently omit these data files.
+artifacts = ["src/agent_discover_scanner/data/*.json"]
